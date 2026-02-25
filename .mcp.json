@@ -2,8 +2,8 @@
   "mcpServers": {
     "bridge": {
       "type": "stdio",
-      "command": "bash",
-      "args": ["bridge-mcp.sh"]
+      "command": "bridge-mcp.cmd",
+      "args": []
     }
   }
 }
