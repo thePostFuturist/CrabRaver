@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.rid }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rid: [win-x64, osx-arm64, osx-x64, linux-x64, linux-arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish
+        run: |
+          dotnet publish DigitRaverHelperMCP.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            -o bin/publish/${{ matrix.rid }}
+
+      - name: Rename release asset
+        run: |
+          BINARY_NAME="DigitRaverHelperMCP"
+          RID="${{ matrix.rid }}"
+          SRC_DIR="bin/publish/$RID"
+
+          case "$RID" in
+            win-x64)      ASSET="${BINARY_NAME}.exe";            SRC="${BINARY_NAME}.exe" ;;
+            osx-arm64)    ASSET="${BINARY_NAME}-osx-arm64";      SRC="${BINARY_NAME}" ;;
+            osx-x64)      ASSET="${BINARY_NAME}-osx-x64";        SRC="${BINARY_NAME}" ;;
+            linux-x64)    ASSET="${BINARY_NAME}-linux-x64";       SRC="${BINARY_NAME}" ;;
+            linux-arm64)  ASSET="${BINARY_NAME}-linux-arm64";     SRC="${BINARY_NAME}" ;;
+          esac
+
+          mkdir -p release
+          cp "$SRC_DIR/$SRC" "release/$ASSET"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.rid }}
+          path: release/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release-assets
+          cp artifacts/* release-assets/
+
+          # Include installer and skill if present
+          [ -f dist/install.sh ] && cp dist/install.sh release-assets/
+          [ -f dist/SKILL.md ] && cp dist/SKILL.md release-assets/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          gh release create "$TAG" release-assets/* \
+            --title "Bridge MCP $TAG" \
+            --generate-notes

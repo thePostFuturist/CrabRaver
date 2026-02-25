@@ -2,8 +2,8 @@
   "mcpServers": {
     "bridge": {
       "type": "stdio",
-      "command": "bridge-mcp.cmd",
-      "args": []
+      "command": "node",
+      "args": ["bridge-launcher.mjs"]
     }
   }
 }

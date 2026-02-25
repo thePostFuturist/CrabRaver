@@ -14,7 +14,8 @@
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────
-VERSION="${BRIDGE_VERSION:-1.0.0}"
+INSTALL_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION="${BRIDGE_VERSION:-$(cat "$INSTALL_SCRIPT_DIR/VERSION" 2>/dev/null || echo 1.0.0)}"
 REPO="${BRIDGE_REPO:-thePostFuturist/CrabRaver}"
 BINARY_NAME="DigitRaverHelperMCP"
 SKILL_NAME="digitraver-agent"

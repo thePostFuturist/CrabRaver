@@ -9,9 +9,16 @@ setlocal
 ::   2. User-global:    %USERPROFILE%\.digitraver\mcp\bridge\<version>\win-x64\
 ::   3. Fallback: dotnet run (dev only, requires .NET SDK)
 
-set "VERSION=1.0.0"
 set "BINARY_NAME=DigitRaverHelperMCP"
 set "SCRIPT_DIR=%~dp0"
+
+:: Read version from VERSION file, with env override
+if defined BRIDGE_VERSION (
+    set "VERSION=%BRIDGE_VERSION%"
+) else (
+    set /p VERSION=<"%SCRIPT_DIR%VERSION"
+)
+if not defined VERSION set "VERSION=1.0.0"
 
 :: ── Search for binary ──────────────────────────────────────────────
 set "LOCAL_DIR=%SCRIPT_DIR%bin\publish\win-x64"

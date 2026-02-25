@@ -47,27 +47,56 @@ curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0
 
 ### Quick Start
 
-**Just clone and go** — the binary auto-downloads on first tool call:
+**Just clone and go** — the `.mcp.json` at the repo root is pre-configured:
 
 ```json
-// .mcp.json (already configured in this repo)
 {
   "mcpServers": {
     "bridge": {
       "type": "stdio",
-      "command": "Tools/DigitRaverHelperMCP/bridge-mcp.sh",
-      "args": []
+      "command": "node",
+      "args": ["Tools/DigitRaverHelperMCP/bridge-launcher.mjs"]
     }
   }
 }
 ```
 
-The launcher script (`bridge-mcp.sh`) handles everything:
-1. Detects your OS and architecture
-2. Looks for a local build first (for developers)
+The launcher (`bridge-launcher.mjs`) works on **Windows, macOS, and Linux** using only Node.js built-in modules. Node.js is guaranteed on PATH wherever Claude Code runs.
+
+On first launch it:
+1. Detects your OS and architecture → maps to a .NET Runtime Identifier (RID)
+2. Looks for a local build first (for developers who run `publish.sh`)
 3. Downloads the correct pre-built binary from GitHub Releases if needed
-4. Caches it in `~/.digitraver/mcp/bridge/` (persists across re-clones)
-5. Runs the server
+4. Caches it in `~/.digitraver/mcp/bridge/{version}/{rid}/` (persists across re-clones)
+5. Spawns the MCP server with stdio inherited
+
+### Binary Search Order
+
+The launcher checks for the server binary in this order:
+
+1. **Project-local**: `bin/publish/{rid}/` — output from `publish.sh`
+2. **User cache**: `~/.digitraver/mcp/bridge/{version}/{rid}/` — auto-downloaded binaries
+3. **Auto-download**: fetches from GitHub Releases → saved to user cache
+4. **Fallback**: `dotnet run --project .` (requires .NET 8 SDK)
+
+### Supported Platforms
+
+| RID | OS | Architecture |
+|-----|----|-------------|
+| `win-x64` | Windows | x86-64 |
+| `osx-arm64` | macOS | Apple Silicon |
+| `osx-x64` | macOS | Intel |
+| `linux-x64` | Linux | x86-64 |
+| `linux-arm64` | Linux | ARM64 |
+
+### Launcher Files
+
+| File | Purpose |
+|------|---------|
+| `bridge-launcher.mjs` | **Primary** — cross-platform Node.js launcher (used by `.mcp.json`) |
+| `bridge-mcp.sh` | Bash launcher (macOS/Linux alternative) |
+| `bridge-mcp.cmd` | Windows batch launcher (legacy) |
+| `VERSION` | Single source of truth for the version string — read by all launchers |
 
 ## Configuration
 
@@ -80,8 +109,8 @@ Set the `BRIDGE_DEBUG` environment variable for verbose logging:
   "mcpServers": {
     "bridge": {
       "type": "stdio",
-      "command": "Tools/DigitRaverHelperMCP/bridge-mcp.sh",
-      "args": [],
+      "command": "node",
+      "args": ["Tools/DigitRaverHelperMCP/bridge-launcher.mjs"],
       "env": { "BRIDGE_DEBUG": "1" }
     }
   }
@@ -95,10 +124,12 @@ This injects `--verbose` into the server args, producing debug-level output on s
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BRIDGE_DEBUG` | `0` | Set to `1` to enable verbose logging |
-| `BRIDGE_VERSION` | *(built-in)* | Override the version to download |
+| `BRIDGE_VERSION` | *(from VERSION file)* | Override the version to download |
 | `BRIDGE_REPO` | `thePostFuturist/CrabRaver` | Override the GitHub repo for downloads |
 
-## CLI Arguments
+### CLI Arguments
+
+These are passed to the MCP server binary (not the launcher):
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -116,19 +147,19 @@ If auto-download doesn't work (e.g., no internet, corporate firewall), download 
 2. Download the binary for your platform:
    - `DigitRaverHelperMCP.exe` (Windows x64)
    - `DigitRaverHelperMCP-osx-arm64` (macOS Apple Silicon)
+   - `DigitRaverHelperMCP-osx-x64` (macOS Intel)
    - `DigitRaverHelperMCP-linux-x64` (Linux x64)
-3. Rename to `DigitRaverHelperMCP` (or `.exe` on Windows) and place in `~/.digitraver/mcp/bridge/{version}/{rid}/`:
+   - `DigitRaverHelperMCP-linux-arm64` (Linux ARM64)
+3. Place in `~/.digitraver/mcp/bridge/{version}/{rid}/` and rename to `DigitRaverHelperMCP` (or `.exe` on Windows):
 
 ```bash
 # Example: macOS Apple Silicon, version 1.0.0
 mkdir -p ~/.digitraver/mcp/bridge/1.0.0/osx-arm64
-mv DigitRaverHelperMCP ~/.digitraver/mcp/bridge/1.0.0/osx-arm64/
+mv DigitRaverHelperMCP-osx-arm64 ~/.digitraver/mcp/bridge/1.0.0/osx-arm64/DigitRaverHelperMCP
 chmod +x ~/.digitraver/mcp/bridge/1.0.0/osx-arm64/DigitRaverHelperMCP
 ```
 
-Platform RIDs: `win-x64`, `osx-arm64`, `linux-x64`
-
-## For Developers
+## Development
 
 ### Dev mode (requires .NET 8 SDK)
 
@@ -141,7 +172,7 @@ The launcher falls back to `dotnet run` automatically if no binary is found and 
 ### Publishing locally
 
 ```bash
-# Build all platforms + create release archives
+# Build all 5 platforms
 ./Tools/DigitRaverHelperMCP/publish.sh
 
 # Build a single platform
@@ -150,43 +181,76 @@ The launcher falls back to `dotnet run` automatically if no binary is found and 
 
 Output:
 - `bin/publish/{rid}/` — executables (used first by the launcher)
-- `bin/publish/release/` — binaries for GitHub Release upload
+- `bin/publish/release/` — binaries renamed for GitHub Release upload
 
-### Binary search order
+### Versioning
 
-The launcher checks for binaries in this order:
-1. **Project-local**: `Tools/DigitRaverHelperMCP/bin/publish/{rid}/` — your `publish.sh` output
-2. **User cache**: `~/.digitraver/mcp/bridge/{version}/{rid}/` — auto-downloaded binaries
-3. **Auto-download**: fetches from GitHub Releases → saves to user cache
-4. **dotnet run**: fallback if .NET SDK is available
+The `VERSION` file is the single source of truth. All launchers read it:
+- `bridge-launcher.mjs` — `readFileSync("VERSION")`
+- `bridge-mcp.sh` — `cat "$SCRIPT_DIR/VERSION"`
+- `bridge-mcp.cmd` — `set /p VERSION=<"%SCRIPT_DIR%VERSION"`
+- `dist/install.sh` — `cat "$INSTALL_SCRIPT_DIR/VERSION"`
+
+Override at runtime with `BRIDGE_VERSION` env var.
+
+### .csproj Notes
+
+The `<RuntimeIdentifier>` is **not** set in the `.csproj`. The RID is supplied by the `-r` flag when publishing:
+
+```bash
+dotnet publish -c Release -r osx-arm64
+```
+
+This allows `dotnet run` (dev fallback) to work as framework-dependent without a hardcoded RID.
 
 ### Release Process
 
-1. Update `VERSION` in `bridge-mcp.sh` and `dist/install.sh`
-2. Cross-compile all platforms:
-   ```bash
-   ./Tools/DigitRaverHelperMCP/publish.sh
-   ```
-3. Verify the release folder contains all 5 artifacts:
-   ```
-   bin/publish/release/
-   ├── install.sh
-   ├── SKILL.md
-   ├── DigitRaverHelperMCP.exe          (win-x64)
-   ├── DigitRaverHelperMCP-osx-arm64    (macOS)
-   └── DigitRaverHelperMCP-linux-x64    (linux)
-   ```
-4. Create a GitHub Release and upload:
-   ```bash
-   gh release create v1.0.0 \
-     Tools/DigitRaverHelperMCP/bin/publish/release/* \
-     --title "Bridge MCP v1.0.0" \
-     --notes "Initial release"
-   ```
+#### Automated (CI)
+
+Push a `v*` tag to trigger the GitHub Actions workflow:
+
+```bash
+# 1. Update VERSION file
+echo "1.1.0" > Tools/DigitRaverHelperMCP/VERSION
+
+# 2. Commit and tag
+git add Tools/DigitRaverHelperMCP/VERSION
+git commit -m "Bump version to 1.1.0"
+git tag v1.1.0
+git push && git push --tags
+```
+
+The workflow (`.github/workflows/release.yml`):
+1. Builds all 5 platforms via matrix on `ubuntu-latest`
+2. Renames binaries to release asset names
+3. Creates a GitHub Release with all binaries + `install.sh` + `SKILL.md`
+
+#### Manual
+
+```bash
+# 1. Cross-compile all platforms
+./Tools/DigitRaverHelperMCP/publish.sh
+
+# 2. Verify release folder
+ls bin/publish/release/
+# DigitRaverHelperMCP.exe          (win-x64)
+# DigitRaverHelperMCP-osx-arm64    (macOS Apple Silicon)
+# DigitRaverHelperMCP-osx-x64      (macOS Intel)
+# DigitRaverHelperMCP-linux-x64    (Linux x64)
+# DigitRaverHelperMCP-linux-arm64  (Linux ARM64)
+# install.sh
+# SKILL.md
+
+# 3. Create GitHub Release
+gh release create v1.0.0 bin/publish/release/* \
+  -R thePostFuturist/CrabRaver \
+  --title "Bridge MCP v1.0.0" \
+  --notes "Initial release"
+```
 
 ## Architecture
 
-Four source files:
+Four C# source files plus cross-platform launcher scripts:
 
 | File | Role |
 |------|------|
@@ -194,13 +258,23 @@ Four source files:
 | `BridgeWebSocketClient.cs` | Persistent WebSocket connection — send/receive, auto-reconnect, keepalive, event buffering |
 | `BridgeToolRegistry.cs` | Dynamic tool registry — loads schemas from `bridge.get_tools`, dispatches calls, local compound tools |
 | `BridgeDiscovery.cs` | UDP auto-discovery — finds Bridge server on LAN without hardcoded host |
+| `bridge-launcher.mjs` | Cross-platform Node.js launcher — RID detection, binary resolution, auto-download |
+| `VERSION` | Version string — single source of truth for all launchers and CI |
 
-### Startup sequence
+### Startup Sequence
 
-1. **Discovery** — UDP broadcast to find Bridge, or use `--host`/`--no-discovery`
-2. **Connect** — WebSocket handshake to `ws://{host}:{port}`
-3. **Load tools** — `bridge.get_tools` → register all Bridge tools + local compound tools
-4. **Ready** — MCP stdio transport starts accepting `tools/list` and `tools/call`
+```
+1. node bridge-launcher.mjs
+   ├── detect RID (platform + arch)
+   ├── find binary (local → cache → download → dotnet run)
+   └── spawn DigitRaverHelperMCP
+
+2. DigitRaverHelperMCP (MCP server)
+   ├── UDP discovery (find Bridge host, or --host/--no-discovery)
+   ├── WebSocket connect to ws://{host}:{port}
+   ├── bridge.get_tools → register all Bridge tools + local compound tools
+   └── MCP stdio transport ready (tools/list, tools/call)
+```
 
 ## Tool Categories
 
@@ -216,7 +290,7 @@ Loaded at startup from Bridge's `get_tools` endpoint. Named `bridge__{domain}_{a
 - `bridge__vision_*` — Screenshots (returned as MCP `ImageContent`)
 - `bridge__emotion_*`, `bridge__ui_*`, `bridge__loopback_ws_*`
 
-### Local tools (7)
+### Local tools (9)
 
 Implemented in the MCP server, no 1:1 Bridge command:
 
@@ -246,7 +320,7 @@ Implemented in the MCP server, no 1:1 Bridge command:
 - Use `--host` to skip discovery entirely
 
 **"Unknown tool" errors**
-- Bridge tools load dynamically. If Bridge was unavailable at startup, call `bridge__get_tools` to re-discover.
+- Bridge tools load dynamically. If Bridge was unavailable at startup, call `bridge__bridge_get_tools` to re-discover.
 
 **Reconnection**
 - Auto-reconnects with exponential backoff (1–30s)
@@ -258,11 +332,36 @@ Implemented in the MCP server, no 1:1 Bridge command:
 - Try manual download (see [Manual Install](#manual-install))
 - Corporate firewalls may block GitHub — use `BRIDGE_REPO` env var to point to a mirror
 
+**Launcher doesn't start**
+- Verify Node.js is on PATH: `node --version`
+- Check syntax: `node --check Tools/DigitRaverHelperMCP/bridge-launcher.mjs`
+- Enable diagnostics: `BRIDGE_DEBUG=1 node Tools/DigitRaverHelperMCP/bridge-launcher.mjs`
+
 ## Repository Structure
 
-This repo (`CrabRaver`) is the **public** home for the Bridge MCP server.
-It is consumed by the private `DigitRaver-3` repo as a git submodule at
-`Tools/DigitRaverHelperMCP/`.
+This repo (`CrabRaver`) is the **public** home for the Bridge MCP server. It is consumed by the private `DigitRaver-3` repo as a git submodule at `Tools/DigitRaverHelperMCP/`.
+
+```
+Tools/DigitRaverHelperMCP/
+├── Program.cs                    # MCP server entry point
+├── BridgeWebSocketClient.cs      # WebSocket client with reconnect
+├── BridgeToolRegistry.cs         # Dynamic tool registry
+├── BridgeDiscovery.cs            # UDP auto-discovery
+├── bridge-launcher.mjs           # Cross-platform Node.js launcher
+├── bridge-mcp.sh                 # Bash launcher (macOS/Linux)
+├── bridge-mcp.cmd                # Windows batch launcher (legacy)
+├── VERSION                       # Version single source of truth
+├── DigitRaverHelperMCP.csproj    # .NET 8 project
+├── .mcp.json                     # MCP config (for standalone use)
+├── .gitattributes                # LF line endings for .sh and .mjs
+├── .github/
+│   └── workflows/
+│       └── release.yml           # CI: build 5 platforms + create release
+├── dist/
+│   ├── install.sh                # One-line installer for OpenClaw
+│   └── SKILL.md                  # Agent skill definition
+└── publish.sh                    # Local cross-compile script
+```
 
 ### For contributors
 
@@ -280,34 +379,8 @@ git checkout main
 # then cd ../.. and commit the submodule pointer update in DigitRaver-3
 ```
 
-### Release process
-
-Releases are created on **this repo** (CrabRaver). The `publish.sh` script
-builds platform binaries and copies release artifacts to `bin/publish/release/`:
-
-```
-bin/publish/release/
-├── install.sh                        (single-file installer)
-├── SKILL.md                          (OpenClaw agent skill)
-├── DigitRaverHelperMCP.exe           (Windows x64)
-├── DigitRaverHelperMCP-osx-arm64     (macOS Apple Silicon)
-└── DigitRaverHelperMCP-linux-x64     (Linux x64)
-```
-
-Upload all artifacts to a GitHub Release:
-
-```bash
-gh release create v1.0.0 bin/publish/release/* \
-  -R thePostFuturist/CrabRaver \
-  --title "Bridge MCP v1.0.0" \
-  --notes "Initial release"
-```
-
-CrabRaver is **private**, but GitHub Releases are configured with
-public download URLs — the `install.sh` one-liner works for anyone.
-Contributors need repo access to clone or push.
-
 ## Further Reading
 
-- [PLAN_MCP.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/PLAN_MCP.md) — Full design document, decision log, phase history *(private repo)*
 - [Bridge ARCHITECTURE.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/ARCHITECTURE.md) — Unity-side Bridge module architecture *(private repo)*
+- [USAGE.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/USAGE.md) — Tool reference and usage patterns *(private repo)*
+- [PLAN_MCP.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/PLAN_MCP.md) — Design document and decision log *(private repo)*

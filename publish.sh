@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ALL_RIDS=("win-x64" "osx-arm64" "linux-x64")
+ALL_RIDS=("win-x64" "osx-arm64" "osx-x64" "linux-x64" "linux-arm64")
 RELEASE_DIR="$SCRIPT_DIR/bin/publish/release"
 BINARY_NAME="DigitRaverHelperMCP"
 
