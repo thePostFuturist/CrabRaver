@@ -258,6 +258,55 @@ Implemented in the MCP server, no 1:1 Bridge command:
 - Try manual download (see [Manual Install](#manual-install))
 - Corporate firewalls may block GitHub — use `BRIDGE_REPO` env var to point to a mirror
 
+## Repository Structure
+
+This repo (`CrabRaver`) is the **public** home for the Bridge MCP server.
+It is consumed by the private `DigitRaver-3` repo as a git submodule at
+`Tools/DigitRaverHelperMCP/`.
+
+### For contributors
+
+```bash
+# Clone the parent repo with submodules
+git clone --recurse-submodules https://github.com/thePostFuturist/DigitRaver-3.git
+
+# Or initialize submodules in an existing clone
+git submodule update --init --recursive
+
+# To work on CrabRaver directly
+cd Tools/DigitRaverHelperMCP
+git checkout main
+# make changes, commit, push to CrabRaver
+# then cd ../.. and commit the submodule pointer update in DigitRaver-3
+```
+
+### Release process
+
+Releases are created on **this repo** (CrabRaver). The `publish.sh` script
+builds platform binaries and copies release artifacts to `bin/publish/release/`:
+
+```
+bin/publish/release/
+├── install.sh                        (single-file installer)
+├── SKILL.md                          (OpenClaw agent skill)
+├── DigitRaverHelperMCP.exe           (Windows x64)
+├── DigitRaverHelperMCP-osx-arm64     (macOS Apple Silicon)
+└── DigitRaverHelperMCP-linux-x64     (Linux x64)
+```
+
+Upload all artifacts to a GitHub Release:
+
+```bash
+gh release create v1.0.0 bin/publish/release/* \
+  -R thePostFuturist/CrabRaver \
+  --title "Bridge MCP v1.0.0" \
+  --notes "Initial release"
+```
+
+CrabRaver is **private**, but GitHub Releases are configured with
+public download URLs — the `install.sh` one-liner works for anyone.
+Contributors need repo access to clone or push.
+
 ## Further Reading
 
 - [PLAN_MCP.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/PLAN_MCP.md) — Full design document, decision log, phase history *(private repo)*
