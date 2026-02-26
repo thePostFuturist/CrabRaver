@@ -71,8 +71,9 @@ jobs:
           mkdir -p release-assets
           cp artifacts/* release-assets/
 
-          # Include installer and skill if present
+          # Include installers and skill if present
           [ -f dist/install.sh ] && cp dist/install.sh release-assets/
+          [ -f dist/install.ps1 ] && cp dist/install.ps1 release-assets/
           [ -f dist/SKILL.md ] && cp dist/SKILL.md release-assets/
 
       - name: Create GitHub Release

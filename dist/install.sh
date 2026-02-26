@@ -115,7 +115,7 @@ try:
     with open('$OPENCLAW_CONFIG', 'r') as f:
         cfg = json.load(f)
     servers = cfg.get('plugins', {}).get('entries', {}).get('mcp-adapter', {}).get('config', {}).get('servers', [])
-    cfg['plugins']['entries']['mcp-adapter']['config']['servers'] = [s for s in servers if s.get('name') != 'bridge']
+    cfg['plugins']['entries']['mcp-adapter']['config']['servers'] = [s for s in servers if s.get('name') != 'digitraver-bridge']
     with open('$OPENCLAW_CONFIG', 'w') as f:
         json.dump(cfg, f, indent=2)
     print('[install] Removed bridge server entry from openclaw.json', file=sys.stderr)
@@ -203,7 +203,7 @@ servers = cfg['plugins']['entries']['mcp-adapter']['config']['servers']
 
 # Build new server entry
 new_entry = {
-    'name': 'bridge',
+    'name': 'digitraver-bridge',
     'transport': 'stdio',
     'command': binary_path,
     'args': []
@@ -212,7 +212,7 @@ new_entry = {
 # Replace existing or append
 replaced = False
 for i, s in enumerate(servers):
-    if s.get('name') == 'bridge':
+    if s.get('name') == 'digitraver-bridge':
         servers[i] = new_entry
         replaced = True
         break
@@ -226,7 +226,7 @@ print(f'[install] OpenClaw config updated: {config_path}', file=sys.stderr)
 "
   else
     info "Warning: python3 not found. Please add the bridge server to $OPENCLAW_CONFIG manually:"
-    info '  {"plugins":{"entries":{"mcp-adapter":{"enabled":true,"config":{"servers":[{"name":"bridge","transport":"stdio","command":"'"$binary_path"'","args":[]}]}}}}}'
+    info '  {"plugins":{"entries":{"mcp-adapter":{"enabled":true,"config":{"servers":[{"name":"digitraver-bridge","transport":"stdio","command":"'"$binary_path"'","args":[]}]}}}}}'
   fi
 
   # ── 5. Print success ───────────────────────────────────────────────

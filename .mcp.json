@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "bridge": {
+    "digitraver-bridge": {
       "type": "stdio",
       "command": "node",
       "args": ["bridge-launcher.mjs"]

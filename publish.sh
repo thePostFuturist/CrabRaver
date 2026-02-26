@@ -79,6 +79,10 @@ if [[ -f "$DIST_DIR/install.sh" ]]; then
   cp "$DIST_DIR/install.sh" "$RELEASE_DIR/install.sh"
   echo "  Copied to release: install.sh"
 fi
+if [[ -f "$DIST_DIR/install.ps1" ]]; then
+  cp "$DIST_DIR/install.ps1" "$RELEASE_DIR/install.ps1"
+  echo "  Copied to release: install.ps1"
+fi
 if [[ -f "$DIST_DIR/SKILL.md" ]]; then
   cp "$DIST_DIR/SKILL.md" "$RELEASE_DIR/SKILL.md"
   echo "  Copied to release: SKILL.md"
@@ -102,7 +106,7 @@ for RID in "${RIDS[@]}"; do
 done
 
 # Show installer + skill
-for EXTRA in install.sh SKILL.md; do
+for EXTRA in install.sh install.ps1 SKILL.md; do
   if [[ -f "$RELEASE_DIR/$EXTRA" ]]; then
     EXTRA_SIZE=$(ls -lh "$RELEASE_DIR/$EXTRA" | awk '{print $5}')
     printf "  %-35s  %s\n" "$EXTRA" "$EXTRA_SIZE"

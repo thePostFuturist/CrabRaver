@@ -61,17 +61,19 @@ public static class BridgeDiscovery
                         continue;
                     }
 
-                    var host = beacon["hostname"]?.ToString();
+                    var beaconHostname = beacon["hostname"]?.ToString() ?? "unknown";
+                    var host = result.RemoteEndPoint.Address.ToString();
                     var port = beacon["port"]?.Value<int>() ?? 0;
 
-                    if (string.IsNullOrEmpty(host) || port <= 0)
+                    if (port <= 0)
                     {
-                        logger.LogDebug("Ignoring beacon with invalid host/port: host={Host}, port={Port}", host, port);
+                        logger.LogDebug("Ignoring beacon with invalid port: {Port}", port);
                         continue;
                     }
 
                     var deviceId = beacon["deviceId"]?.ToString() ?? "unknown";
-                    logger.LogInformation("Discovered Bridge: {Host}:{Port} (device: {DeviceId})", host, port, deviceId);
+                    logger.LogInformation("Discovered Bridge: {Host}:{Port} (beacon hostname: {Hostname}, device: {DeviceId})",
+                        host, port, beaconHostname, deviceId);
 
                     return (host, port);
                 }

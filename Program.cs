@@ -103,7 +103,7 @@ builder.Services
     {
         options.ServerInfo = new()
         {
-            Name = "bridge",
+            Name = "digitraver-bridge",
             Version = "3.0.0"
         };
     })

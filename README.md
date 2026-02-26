@@ -1,26 +1,50 @@
 # DigitRaverHelperMCP — Bridge MCP Server
 
-Standalone .NET 8 MCP server that bridges MCP clients (Claude Code, OpenClaw, etc.) to DigitRaver's Bridge WebSocket server running inside Unity.
+Standalone .NET 8 MCP server that bridges MCP clients (Claude Code, OpenClaw, etc.) to DigitRaver's Bridge WebSocket server running inside the DigitRaver binary.
 
 ```
-MCP Client ←── stdio ──→ MCP Server ←── WebSocket ──→ Bridge (Unity)
+MCP Client ←── stdio ──→ MCP Server ←── WebSocket ──→ Bridge (DigitRaver)
 ```
 
 ## For OpenClaw Users
 
-One-line install — downloads the binary, installs the agent skill, and configures OpenClaw:
+One-line install — downloads the binary, installs the agent skill, and configures OpenClaw.
+
+### macOS / Linux
 
 ```bash
 curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.sh | bash
 ```
 
-For private repos, provide a GitHub token:
+### Windows (PowerShell)
+
+```powershell
+irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.ps1 | iex
+```
+
+### Windows (Git Bash)
+
+The bash installer also works in Git Bash / MSYS2:
+
+```bash
+curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.sh | bash
+```
+
+### Private repos — provide a GitHub token
+
+**macOS / Linux / Git Bash:**
 
 ```bash
 GITHUB_TOKEN=ghp_xxx curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.sh | bash
 ```
 
-**What it installs:**
+**Windows (PowerShell):**
+
+```powershell
+$env:GITHUB_TOKEN = 'ghp_xxx'; irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.ps1 | iex
+```
+
+### What it installs
 
 | Component | Location |
 |-----------|----------|
@@ -35,10 +59,18 @@ openclaw gateway restart
 # Then use: /digitraver-agent
 ```
 
-**Uninstall:**
+### Uninstall
+
+**macOS / Linux / Git Bash:**
 
 ```bash
 curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.sh | bash -s -- --uninstall
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0/install.ps1 -OutFile install.ps1; .\install.ps1 -Uninstall
 ```
 
 ---
@@ -52,10 +84,10 @@ curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.0.0
 ```json
 {
   "mcpServers": {
-    "bridge": {
+    "digitraver-bridge": {
       "type": "stdio",
       "command": "node",
-      "args": ["Tools/DigitRaverHelperMCP/bridge-launcher.mjs"]
+      "args": ["bridge-launcher.mjs"]
     }
   }
 }
@@ -107,10 +139,10 @@ Set the `BRIDGE_DEBUG` environment variable for verbose logging:
 ```json
 {
   "mcpServers": {
-    "bridge": {
+    "digitraver-bridge": {
       "type": "stdio",
       "command": "node",
-      "args": ["Tools/DigitRaverHelperMCP/bridge-launcher.mjs"],
+      "args": ["bridge-launcher.mjs"],
       "env": { "BRIDGE_DEBUG": "1" }
     }
   }
@@ -164,7 +196,7 @@ chmod +x ~/.digitraver/mcp/bridge/1.0.0/osx-arm64/DigitRaverHelperMCP
 ### Dev mode (requires .NET 8 SDK)
 
 ```bash
-dotnet run --project Tools/DigitRaverHelperMCP
+dotnet run
 ```
 
 The launcher falls back to `dotnet run` automatically if no binary is found and .NET SDK is available.
@@ -173,10 +205,10 @@ The launcher falls back to `dotnet run` automatically if no binary is found and 
 
 ```bash
 # Build all 5 platforms
-./Tools/DigitRaverHelperMCP/publish.sh
+./publish.sh
 
 # Build a single platform
-./Tools/DigitRaverHelperMCP/publish.sh win-x64
+./publish.sh win-x64
 ```
 
 Output:
@@ -190,6 +222,7 @@ The `VERSION` file is the single source of truth. All launchers read it:
 - `bridge-mcp.sh` — `cat "$SCRIPT_DIR/VERSION"`
 - `bridge-mcp.cmd` — `set /p VERSION=<"%SCRIPT_DIR%VERSION"`
 - `dist/install.sh` — `cat "$INSTALL_SCRIPT_DIR/VERSION"`
+- `dist/install.ps1` — `Get-Content VERSION`
 
 Override at runtime with `BRIDGE_VERSION` env var.
 
@@ -211,10 +244,10 @@ Push a `v*` tag to trigger the GitHub Actions workflow:
 
 ```bash
 # 1. Update VERSION file
-echo "1.1.0" > Tools/DigitRaverHelperMCP/VERSION
+echo "1.1.0" > VERSION
 
 # 2. Commit and tag
-git add Tools/DigitRaverHelperMCP/VERSION
+git add VERSION
 git commit -m "Bump version to 1.1.0"
 git tag v1.1.0
 git push && git push --tags
@@ -223,13 +256,13 @@ git push && git push --tags
 The workflow (`.github/workflows/release.yml`):
 1. Builds all 5 platforms via matrix on `ubuntu-latest`
 2. Renames binaries to release asset names
-3. Creates a GitHub Release with all binaries + `install.sh` + `SKILL.md`
+3. Creates a GitHub Release with all binaries + `install.sh` + `install.ps1` + `SKILL.md`
 
 #### Manual
 
 ```bash
 # 1. Cross-compile all platforms
-./Tools/DigitRaverHelperMCP/publish.sh
+./publish.sh
 
 # 2. Verify release folder
 ls bin/publish/release/
@@ -239,6 +272,7 @@ ls bin/publish/release/
 # DigitRaverHelperMCP-linux-x64    (Linux x64)
 # DigitRaverHelperMCP-linux-arm64  (Linux ARM64)
 # install.sh
+# install.ps1
 # SKILL.md
 
 # 3. Create GitHub Release
@@ -308,9 +342,9 @@ Implemented in the MCP server, no 1:1 Bridge command:
 
 ## Troubleshooting
 
-**Unity not running / Bridge not started**
+**DigitRaver not running / Bridge not started**
 - MCP server starts with local-only tools and logs a warning
-- Bridge tools become available after reconnection when Unity starts
+- Bridge tools become available after reconnection when DigitRaver starts
 
 **Port mismatch**
 - Bridge defaults to `ws://0.0.0.0:18800`. Pass `--port` if changed.
@@ -323,8 +357,8 @@ Implemented in the MCP server, no 1:1 Bridge command:
 - Bridge tools load dynamically. If Bridge was unavailable at startup, call `bridge__bridge_get_tools` to re-discover.
 
 **Reconnection**
-- Auto-reconnects with exponential backoff (1–30s)
-- Keepalive pings every 15s detect stale connections
+- Auto-reconnects with exponential backoff (2s, 4s, 8s for up to 3 attempts; 1s delay before auto-reconnect)
+- Keepalive pings every 30s with 10s timeout detect stale connections
 - Tool calls during disconnect return an error immediately (no silent hang)
 
 **Auto-download fails**
@@ -334,15 +368,77 @@ Implemented in the MCP server, no 1:1 Bridge command:
 
 **Launcher doesn't start**
 - Verify Node.js is on PATH: `node --version`
-- Check syntax: `node --check Tools/DigitRaverHelperMCP/bridge-launcher.mjs`
-- Enable diagnostics: `BRIDGE_DEBUG=1 node Tools/DigitRaverHelperMCP/bridge-launcher.mjs`
+- Check syntax: `node --check bridge-launcher.mjs`
+- Enable diagnostics: `BRIDGE_DEBUG=1 node bridge-launcher.mjs`
+
+## Stopping the Server
+
+The MCP server is normally managed by the MCP client (Claude Code, OpenClaw, etc.) — when the client exits, it closes stdin and the server shuts down automatically. If you need to stop it manually:
+
+### When launched by an MCP client
+
+The client owns the server process. Stopping the client stops the server. For example:
+
+- **Claude Code** — exit the session (`/exit` or close the terminal). The server process is terminated automatically.
+- **OpenClaw** — `openclaw gateway restart` restarts all MCP servers, or exit OpenClaw entirely.
+
+### When running standalone (manual / QA testing)
+
+If you started the server yourself (e.g., `node bridge-launcher.mjs` or `dotnet run`):
+
+**Windows (PowerShell / CMD / Git Bash):**
+
+```
+Ctrl+C
+```
+
+Press `Ctrl+C` in the terminal where the server is running. The .NET host intercepts the signal and shuts down gracefully (closes the WebSocket, disposes resources).
+
+If the process is backgrounded or in another terminal:
+
+```powershell
+# Find the process
+Get-Process -Name DigitRaverHelperMCP
+
+# Stop it
+Stop-Process -Name DigitRaverHelperMCP
+```
+
+**macOS / Linux:**
+
+```
+Ctrl+C
+```
+
+Or from another terminal:
+
+```bash
+# Find the process
+pgrep -f DigitRaverHelperMCP
+
+# Graceful shutdown (SIGTERM)
+pkill -f DigitRaverHelperMCP
+
+# Force kill if unresponsive (SIGKILL)
+pkill -9 -f DigitRaverHelperMCP
+```
+
+### Verifying the server is stopped
+
+```bash
+# Windows (PowerShell)
+Get-Process -Name DigitRaverHelperMCP -ErrorAction SilentlyContinue
+
+# macOS / Linux
+pgrep -f DigitRaverHelperMCP
+```
+
+No output means the server is no longer running. The WebSocket port (default 18800) is a Bridge port, not an MCP port — the MCP server communicates via stdio only, so there's no port to check on the MCP side.
 
 ## Repository Structure
 
-This repo (`CrabRaver`) is the **public** home for the Bridge MCP server. It is consumed by the private `DigitRaver-3` repo as a git submodule at `Tools/DigitRaverHelperMCP/`.
-
 ```
-Tools/DigitRaverHelperMCP/
+.
 ├── Program.cs                    # MCP server entry point
 ├── BridgeWebSocketClient.cs      # WebSocket client with reconnect
 ├── BridgeToolRegistry.cs         # Dynamic tool registry
@@ -358,29 +454,9 @@ Tools/DigitRaverHelperMCP/
 │   └── workflows/
 │       └── release.yml           # CI: build 5 platforms + create release
 ├── dist/
-│   ├── install.sh                # One-line installer for OpenClaw
+│   ├── install.sh                # One-line installer for OpenClaw (macOS/Linux/Git Bash)
+│   ├── install.ps1               # One-line installer for OpenClaw (Windows PowerShell)
 │   └── SKILL.md                  # Agent skill definition
 └── publish.sh                    # Local cross-compile script
 ```
 
-### For contributors
-
-```bash
-# Clone the parent repo with submodules
-git clone --recurse-submodules https://github.com/thePostFuturist/DigitRaver-3.git
-
-# Or initialize submodules in an existing clone
-git submodule update --init --recursive
-
-# To work on CrabRaver directly
-cd Tools/DigitRaverHelperMCP
-git checkout main
-# make changes, commit, push to CrabRaver
-# then cd ../.. and commit the submodule pointer update in DigitRaver-3
-```
-
-## Further Reading
-
-- [Bridge ARCHITECTURE.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/ARCHITECTURE.md) — Unity-side Bridge module architecture *(private repo)*
-- [USAGE.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/USAGE.md) — Tool reference and usage patterns *(private repo)*
-- [PLAN_MCP.md](https://github.com/thePostFuturist/DigitRaver-3/blob/master/Assets/_DigitRaver/Code/Bridge/PLAN_MCP.md) — Design document and decision log *(private repo)*
