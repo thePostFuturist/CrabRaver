@@ -1,14 +1,14 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    DigitRaver Bridge MCP — PowerShell installer for OpenClaw users.
+    DigitRaver Bridge MCP — PowerShell installer (configures mcporter).
 
 .DESCRIPTION
     Downloads the Bridge MCP server binary and agent skill, then configures
-    OpenClaw to use them.
+    mcporter to use them.
 
 .PARAMETER Uninstall
-    Remove the binary, skill, and openclaw.json server entry.
+    Remove the binary, skill, and mcporter.json server entry.
 
 .PARAMETER Help
     Show usage information.
@@ -54,8 +54,9 @@ $SkillName   = 'digitraver-agent'
 
 $BridgeDir      = Join-Path $HOME '.digitraver' 'mcp' 'bridge'
 $OpenClawDir    = Join-Path $HOME '.openclaw'
-$OpenClawConfig = Join-Path $OpenClawDir 'openclaw.json'
 $SkillDir       = Join-Path $OpenClawDir 'skills' $SkillName
+$McPorterDir    = Join-Path $HOME '.mcporter'
+$McPorterConfig = Join-Path $McPorterDir 'mcporter.json'
 
 # ── Helpers ──────────────────────────────────────────────────────────
 function Write-Info  { param([string]$Msg) Write-Host "[install] $Msg" }
@@ -95,7 +96,7 @@ if ($Help) {
     Write-Host @"
 Usage: install.ps1 [-Uninstall] [-Help]
 
-Installs DigitRaver Bridge MCP server for OpenClaw.
+Installs DigitRaver Bridge MCP server and configures mcporter.
 
 Options:
   -Uninstall   Remove binary, skill, and config entry
@@ -132,19 +133,21 @@ if ($Uninstall) {
         Write-Info "Removed: $SkillDir"
     }
 
-    # Patch openclaw.json — remove bridge server entry
-    if (Test-Path $OpenClawConfig) {
+    # Remove digitraver-bridge from mcporter.json
+    if (Test-Path $McPorterConfig) {
         try {
-            $cfg = Get-Content $OpenClawConfig -Raw | ConvertFrom-Json
-            $servers = $cfg.plugins.entries.'mcp-adapter'.config.servers
-            if ($servers) {
-                $cfg.plugins.entries.'mcp-adapter'.config.servers = @($servers | Where-Object { $_.name -ne 'digitraver-bridge' })
-                $cfg | ConvertTo-Json -Depth 20 | Set-Content $OpenClawConfig -Encoding UTF8
-                Write-Info 'Removed bridge server entry from openclaw.json'
+            $cfg = Get-Content $McPorterConfig -Raw | ConvertFrom-Json
+            if ($cfg.mcpServers -and $cfg.mcpServers.PSObject.Properties['digitraver-bridge']) {
+                $cfg.mcpServers.PSObject.Properties.Remove('digitraver-bridge')
+                $cfg | ConvertTo-Json -Depth 20 | Set-Content $McPorterConfig -Encoding UTF8
+                Write-Info 'Removed digitraver-bridge from mcporter.json'
+            }
+            else {
+                Write-Info 'digitraver-bridge not found in mcporter.json'
             }
         }
         catch {
-            Write-Info "Could not patch openclaw.json: $_"
+            Write-Info "Could not patch mcporter.json: $_"
         }
     }
 
@@ -174,67 +177,40 @@ New-Item -ItemType Directory -Path $SkillDir -Force | Out-Null
 Download-Asset -AssetName 'SKILL.md' -Dest (Join-Path $SkillDir 'SKILL.md')
 Write-Info "Skill installed: $(Join-Path $SkillDir 'SKILL.md')"
 
-# 3. Install mcp-adapter plugin
-$openclawCmd = Get-Command openclaw -ErrorAction SilentlyContinue
-if ($openclawCmd) {
-    $plugins = & openclaw plugins list 2>$null
-    if ($plugins -match 'mcp-adapter') {
-        Write-Info 'mcp-adapter plugin already installed'
-    }
-    else {
-        Write-Info 'Installing mcp-adapter plugin...'
-        try { & openclaw plugins install mcp-adapter }
-        catch { Write-Info 'Warning: could not install mcp-adapter plugin automatically' }
-    }
-}
-else {
-    Write-Info "Warning: 'openclaw' CLI not found. Install the mcp-adapter plugin manually:"
-    Write-Info '  openclaw plugins install mcp-adapter'
-}
-
-# 4. Patch openclaw.json
+# 3. Configure mcporter
 $binaryPath = (Join-Path $binDir $localExe).Replace('\', '/')
 
-if (-not (Test-Path $OpenClawDir)) { New-Item -ItemType Directory -Path $OpenClawDir -Force | Out-Null }
+if (-not (Test-Path $McPorterDir)) { New-Item -ItemType Directory -Path $McPorterDir -Force | Out-Null }
 
-if (Test-Path $OpenClawConfig) {
-    $cfg = Get-Content $OpenClawConfig -Raw | ConvertFrom-Json
+if (Test-Path $McPorterConfig) {
+    $cfg = Get-Content $McPorterConfig -Raw | ConvertFrom-Json
 }
 else {
     $cfg = [PSCustomObject]@{}
 }
 
-# Ensure structure
-if (-not $cfg.plugins)                                     { $cfg | Add-Member -NotePropertyName plugins -NotePropertyValue ([PSCustomObject]@{}) }
-if (-not $cfg.plugins.entries)                             { $cfg.plugins | Add-Member -NotePropertyName entries -NotePropertyValue ([PSCustomObject]@{}) }
-if (-not $cfg.plugins.entries.'mcp-adapter')               { $cfg.plugins.entries | Add-Member -NotePropertyName 'mcp-adapter' -NotePropertyValue ([PSCustomObject]@{}) }
-$cfg.plugins.entries.'mcp-adapter' | Add-Member -NotePropertyName enabled -NotePropertyValue $true -Force
-if (-not $cfg.plugins.entries.'mcp-adapter'.config)        { $cfg.plugins.entries.'mcp-adapter' | Add-Member -NotePropertyName config -NotePropertyValue ([PSCustomObject]@{}) }
-if (-not $cfg.plugins.entries.'mcp-adapter'.config.servers){ $cfg.plugins.entries.'mcp-adapter'.config | Add-Member -NotePropertyName servers -NotePropertyValue @() }
-
-$newEntry = [PSCustomObject]@{
-    name      = 'digitraver-bridge'
-    transport = 'stdio'
-    command   = $binaryPath
-    args      = @()
+# Ensure mcpServers key
+if (-not $cfg.mcpServers) {
+    $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([PSCustomObject]@{})
 }
 
-$servers  = [System.Collections.ArrayList]@($cfg.plugins.entries.'mcp-adapter'.config.servers)
-$replaced = $false
-for ($i = 0; $i -lt $servers.Count; $i++) {
-    if ($servers[$i].name -eq 'digitraver-bridge') {
-        $servers[$i] = $newEntry
-        $replaced = $true
-        break
-    }
+# Upsert digitraver-bridge
+$bridgeEntry = [PSCustomObject]@{
+    command = $binaryPath
+    args    = @()
 }
-if (-not $replaced) { [void]$servers.Add($newEntry) }
-$cfg.plugins.entries.'mcp-adapter'.config.servers = @($servers)
 
-$cfg | ConvertTo-Json -Depth 20 | Set-Content $OpenClawConfig -Encoding UTF8
-Write-Info "OpenClaw config updated: $OpenClawConfig"
+if ($cfg.mcpServers.PSObject.Properties['digitraver-bridge']) {
+    $cfg.mcpServers.'digitraver-bridge' = $bridgeEntry
+}
+else {
+    $cfg.mcpServers | Add-Member -NotePropertyName 'digitraver-bridge' -NotePropertyValue $bridgeEntry
+}
 
-# 5. Success
+$cfg | ConvertTo-Json -Depth 20 | Set-Content $McPorterConfig -Encoding UTF8
+Write-Info "mcporter config updated: $McPorterConfig"
+
+# 4. Success
 Write-Host ''
 Write-Host '=================================================='
 Write-Host '  DigitRaver Bridge MCP — Installed!'
@@ -242,12 +218,13 @@ Write-Host '=================================================='
 Write-Host ''
 Write-Host "  Binary:  $(Join-Path $binDir $localExe)"
 Write-Host "  Skill:   $(Join-Path $SkillDir 'SKILL.md')"
-Write-Host "  Config:  $OpenClawConfig"
+Write-Host "  Config:  $McPorterConfig"
+Write-Host ''
+Write-Host '  Verify:  mcporter config list'
 Write-Host ''
 Write-Host '  Next steps:'
 Write-Host '    1. Make sure the DigitRaver binary is running with Bridge active'
-Write-Host '    2. Restart OpenClaw: openclaw gateway restart'
-Write-Host '    3. Use the agent: /digitraver-agent'
+Write-Host '    2. Use the agent: /digitraver-agent'
 Write-Host ''
 Write-Host '  To uninstall:'
 Write-Host '    .\install.ps1 -Uninstall'

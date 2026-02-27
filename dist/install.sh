@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DigitRaver Bridge MCP — Single-file installer for OpenClaw users.
+# DigitRaver Bridge MCP — Single-file installer (configures mcporter).
 #
 # Usage:
 #   curl -fsSL https://github.com/REPO/releases/download/vVERSION/install.sh | bash
@@ -22,8 +22,9 @@ SKILL_NAME="digitraver-agent"
 
 BRIDGE_DIR="$HOME/.digitraver/mcp/bridge"
 OPENCLAW_DIR="$HOME/.openclaw"
-OPENCLAW_CONFIG="$OPENCLAW_DIR/openclaw.json"
 SKILL_DIR="$OPENCLAW_DIR/skills/$SKILL_NAME"
+MCPORTER_DIR="$HOME/.mcporter"
+MCPORTER_CONFIG="$MCPORTER_DIR/mcporter.json"
 
 # ── Helpers ────────────────────────────────────────────────────────────
 info()  { echo >&2 "[install] $*"; }
@@ -107,20 +108,23 @@ do_uninstall() {
     info "Removed: $SKILL_DIR"
   fi
 
-  # Remove server entry from openclaw.json
-  if [[ -f "$OPENCLAW_CONFIG" ]] && command -v python3 >/dev/null 2>&1; then
+  # Remove server entry from mcporter.json
+  if [[ -f "$MCPORTER_CONFIG" ]] && command -v python3 >/dev/null 2>&1; then
     python3 -c "
 import json, sys
 try:
-    with open('$OPENCLAW_CONFIG', 'r') as f:
+    with open('$MCPORTER_CONFIG', 'r') as f:
         cfg = json.load(f)
-    servers = cfg.get('plugins', {}).get('entries', {}).get('mcp-adapter', {}).get('config', {}).get('servers', [])
-    cfg['plugins']['entries']['mcp-adapter']['config']['servers'] = [s for s in servers if s.get('name') != 'digitraver-bridge']
-    with open('$OPENCLAW_CONFIG', 'w') as f:
-        json.dump(cfg, f, indent=2)
-    print('[install] Removed bridge server entry from openclaw.json', file=sys.stderr)
+    servers = cfg.get('mcpServers', {})
+    if 'digitraver-bridge' in servers:
+        del servers['digitraver-bridge']
+        with open('$MCPORTER_CONFIG', 'w') as f:
+            json.dump(cfg, f, indent=2)
+        print('[install] Removed digitraver-bridge from mcporter.json', file=sys.stderr)
+    else:
+        print('[install] digitraver-bridge not found in mcporter.json', file=sys.stderr)
 except Exception as e:
-    print(f'[install] Could not patch openclaw.json: {e}', file=sys.stderr)
+    print(f'[install] Could not patch mcporter.json: {e}', file=sys.stderr)
 "
   fi
 
@@ -159,29 +163,16 @@ do_install() {
   download_asset "SKILL.md" "$SKILL_DIR/SKILL.md" || exit 1
   info "Skill installed: $SKILL_DIR/SKILL.md"
 
-  # ── 3. Install mcp-adapter plugin ──────────────────────────────────
-  if command -v openclaw >/dev/null 2>&1; then
-    if openclaw plugins list 2>/dev/null | grep -q "mcp-adapter"; then
-      info "mcp-adapter plugin already installed"
-    else
-      info "Installing mcp-adapter plugin..."
-      openclaw plugins install mcp-adapter || info "Warning: could not install mcp-adapter plugin automatically"
-    fi
-  else
-    info "Warning: 'openclaw' CLI not found. Install the mcp-adapter plugin manually:"
-    info "  openclaw plugins install mcp-adapter"
-  fi
-
-  # ── 4. Patch openclaw.json ──────────────────────────────────────────
+  # ── 3. Configure mcporter ──────────────────────────────────────────
   local binary_path="$bin_dir/$local_exe"
 
-  mkdir -p "$OPENCLAW_DIR"
+  mkdir -p "$MCPORTER_DIR"
 
   if command -v python3 >/dev/null 2>&1; then
     python3 -c "
 import json, os, sys
 
-config_path = '$OPENCLAW_CONFIG'
+config_path = '$MCPORTER_CONFIG'
 binary_path = '$binary_path'
 
 # Load or create config
@@ -191,45 +182,26 @@ if os.path.exists(config_path):
 else:
     cfg = {}
 
-# Ensure structure
-cfg.setdefault('plugins', {})
-cfg['plugins'].setdefault('entries', {})
-cfg['plugins']['entries'].setdefault('mcp-adapter', {})
-cfg['plugins']['entries']['mcp-adapter']['enabled'] = True
-cfg['plugins']['entries']['mcp-adapter'].setdefault('config', {})
-cfg['plugins']['entries']['mcp-adapter']['config'].setdefault('servers', [])
+# Ensure mcpServers key
+cfg.setdefault('mcpServers', {})
 
-servers = cfg['plugins']['entries']['mcp-adapter']['config']['servers']
-
-# Build new server entry
-new_entry = {
-    'name': 'digitraver-bridge',
-    'transport': 'stdio',
+# Upsert digitraver-bridge
+cfg['mcpServers']['digitraver-bridge'] = {
     'command': binary_path,
     'args': []
 }
 
-# Replace existing or append
-replaced = False
-for i, s in enumerate(servers):
-    if s.get('name') == 'digitraver-bridge':
-        servers[i] = new_entry
-        replaced = True
-        break
-if not replaced:
-    servers.append(new_entry)
-
 with open(config_path, 'w') as f:
     json.dump(cfg, f, indent=2)
 
-print(f'[install] OpenClaw config updated: {config_path}', file=sys.stderr)
+print(f'[install] mcporter config updated: {config_path}', file=sys.stderr)
 "
   else
-    info "Warning: python3 not found. Please add the bridge server to $OPENCLAW_CONFIG manually:"
-    info '  {"plugins":{"entries":{"mcp-adapter":{"enabled":true,"config":{"servers":[{"name":"digitraver-bridge","transport":"stdio","command":"'"$binary_path"'","args":[]}]}}}}}'
+    info "Warning: python3 not found. Please add the bridge server to $MCPORTER_CONFIG manually:"
+    info '  {"mcpServers":{"digitraver-bridge":{"command":"'"$binary_path"'","args":[]}}}'
   fi
 
-  # ── 5. Print success ───────────────────────────────────────────────
+  # ── 4. Print success ───────────────────────────────────────────────
   echo ""
   echo "=================================================="
   echo "  DigitRaver Bridge MCP — Installed!"
@@ -237,12 +209,13 @@ print(f'[install] OpenClaw config updated: {config_path}', file=sys.stderr)
   echo ""
   echo "  Binary:  $bin_dir/$local_exe"
   echo "  Skill:   $SKILL_DIR/SKILL.md"
-  echo "  Config:  $OPENCLAW_CONFIG"
+  echo "  Config:  $MCPORTER_CONFIG"
+  echo ""
+  echo "  Verify:  mcporter config list"
   echo ""
   echo "  Next steps:"
   echo "    1. Make sure the DigitRaver binary is running with Bridge active"
-  echo "    2. Restart OpenClaw: openclaw gateway restart"
-  echo "    3. Use the agent: /digitraver-agent"
+  echo "    2. Use the agent: /digitraver-agent"
   echo ""
   echo "  To uninstall:"
   echo "    bash install.sh --uninstall"
@@ -257,7 +230,7 @@ case "${1:-}" in
   --help|-h)
     echo "Usage: install.sh [--uninstall] [--help]"
     echo ""
-    echo "Installs DigitRaver Bridge MCP server for OpenClaw."
+    echo "Installs DigitRaver Bridge MCP server and configures mcporter."
     echo ""
     echo "Options:"
     echo "  --uninstall   Remove binary, skill, and config entry"

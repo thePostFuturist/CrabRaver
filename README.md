@@ -50,12 +50,12 @@ $env:GITHUB_TOKEN = 'ghp_xxx'; irm https://github.com/thePostFuturist/CrabRaver/
 |-----------|----------|
 | MCP server binary | `~/.digitraver/mcp/bridge/{rid}/` |
 | Agent skill | `~/.openclaw/skills/digitraver-agent/SKILL.md` |
-| Server config | `~/.openclaw/openclaw.json` (bridge entry added) |
+| Server config | `~/.mcporter/mcporter.json` (`digitraver-bridge` entry) |
 
-After install, restart OpenClaw and invoke the agent:
+After install, verify and invoke the agent:
 
 ```bash
-openclaw gateway restart
+mcporter config list   # should show digitraver-bridge
 # Then use: /digitraver-agent
 ```
 
