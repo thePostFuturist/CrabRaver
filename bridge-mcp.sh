@@ -4,7 +4,7 @@
 #
 # Binary search order:
 #   1. Project-local:  {script_dir}/bin/publish/{rid}/
-#   2. User-global:    ~/.digitraver/mcp/bridge/{version}/{rid}/
+#   2. User-global:    ~/.digitraver/mcp/bridge/{rid}/
 #   3. Auto-download from GitHub Releases → saved to user-global cache
 #   4. Fallback: dotnet run (dev only, requires .NET SDK)
 #
@@ -60,7 +60,7 @@ fi
 
 # ── Search for binary ─────────────────────────────────────────────────
 LOCAL_DIR="$SCRIPT_DIR/bin/publish/$RID"
-CACHE_DIR="$HOME/.digitraver/mcp/bridge/$VERSION/$RID"
+CACHE_DIR="$HOME/.digitraver/mcp/bridge/$RID"
 BINARY=""
 
 if [[ -x "$LOCAL_DIR/$EXE" ]]; then

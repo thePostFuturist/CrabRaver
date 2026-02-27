@@ -114,7 +114,7 @@ if ($Uninstall) {
     Write-Info 'Uninstalling DigitRaver Bridge MCP...'
 
     # Remove binary directory
-    $binDir = Join-Path $BridgeDir $Version
+    $binDir = Join-Path $BridgeDir $RID
     if (Test-Path $binDir) {
         Remove-Item $binDir -Recurse -Force
         Write-Info "Removed: $binDir"
@@ -162,7 +162,7 @@ Write-Info "  Binary:    $Asset"
 Write-Host ''
 
 # 1. Download binary
-$binDir   = Join-Path $BridgeDir $Version $RID
+$binDir   = Join-Path $BridgeDir $RID
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 $localExe = "$BinaryName.exe"
 

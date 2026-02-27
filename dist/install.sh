@@ -137,7 +137,7 @@ do_install() {
   info ""
 
   # ── 1. Download binary ──────────────────────────────────────────────
-  local bin_dir="$BRIDGE_DIR/$VERSION/$RID"
+  local bin_dir="$BRIDGE_DIR/$RID"
   mkdir -p "$bin_dir"
 
   # Local binary name is always DigitRaverHelperMCP (or .exe on Windows)

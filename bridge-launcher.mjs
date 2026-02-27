@@ -4,8 +4,8 @@
 //
 // Binary search order:
 //   1. Project-local:  {scriptDir}/bin/publish/{rid}/
-//   2. User-global:    ~/.digitraver/mcp/bridge/{version}/{rid}/
-//   3. Auto-download from GitHub Releases → saved to user-global cache
+//   2. User-global:    ~/.digitraver/mcp/bridge/{rid}/
+//   3. Auto-download from GitHub Releases → overwrites cache in-place
 //   4. Fallback: dotnet run (dev only, requires .NET SDK)
 //
 // Environment variables:
@@ -14,7 +14,7 @@
 //   BRIDGE_REPO       — override GitHub repo for downloads
 
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, readFileSync, mkdirSync, chmodSync, createWriteStream, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, chmodSync, createWriteStream, unlinkSync, writeFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { platform, arch, homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -73,16 +73,27 @@ function releaseAssetName() {
 
 // ── Search for binary ────────────────────────────────────────────────
 const LOCAL_DIR = join(SCRIPT_DIR, "bin", "publish", RID);
-const CACHE_DIR = join(homedir(), ".digitraver", "mcp", "bridge", VERSION, RID);
+const CACHE_DIR = join(homedir(), ".digitraver", "mcp", "bridge", RID);
+const CACHE_VERSION_FILE = join(CACHE_DIR, ".version");
 
 let binary = "";
+let needsUpdate = false;
 
 if (existsSync(join(LOCAL_DIR, EXE))) {
   binary = join(LOCAL_DIR, EXE);
   diag(`Using local build: ${binary}`);
 } else if (existsSync(join(CACHE_DIR, EXE))) {
-  binary = join(CACHE_DIR, EXE);
-  diag(`Using cached binary: ${binary}`);
+  // Check if cached version matches current VERSION
+  const cachedVersion = existsSync(CACHE_VERSION_FILE)
+    ? readFileSync(CACHE_VERSION_FILE, "utf-8").trim()
+    : "";
+  if (cachedVersion !== VERSION) {
+    diag(`Cached binary is v${cachedVersion || "unknown"}, need v${VERSION}. Updating...`);
+    needsUpdate = true;
+  } else {
+    binary = join(CACHE_DIR, EXE);
+    diag(`Using cached binary: ${binary} (v${VERSION})`);
+  }
 }
 
 // ── Download helper (follows one redirect) ───────────────────────────
@@ -117,8 +128,8 @@ function download(url, dest) {
   });
 }
 
-// ── Download if not found ────────────────────────────────────────────
-if (!binary) {
+// ── Download if not found or outdated ────────────────────────────────
+if (!binary || needsUpdate) {
   const asset = releaseAssetName();
   const url = `https://github.com/${REPO}/releases/download/v${VERSION}/${asset}`;
 
@@ -131,8 +142,9 @@ if (!binary) {
     if (!RID.startsWith("win-")) {
       chmodSync(dest, 0o755);
     }
+    writeFileSync(CACHE_VERSION_FILE, VERSION);
     binary = dest;
-    diag(`Installed to: ${dest}`);
+    diag(`Installed v${VERSION} to: ${dest}`);
   } catch (err) {
     diag(`Download failed: ${err.message}`);
     try { unlinkSync(dest); } catch {}

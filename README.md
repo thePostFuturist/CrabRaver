@@ -48,7 +48,7 @@ $env:GITHUB_TOKEN = 'ghp_xxx'; irm https://github.com/thePostFuturist/CrabRaver/
 
 | Component | Location |
 |-----------|----------|
-| MCP server binary | `~/.digitraver/mcp/bridge/{version}/{rid}/` |
+| MCP server binary | `~/.digitraver/mcp/bridge/{rid}/` |
 | Agent skill | `~/.openclaw/skills/digitraver-agent/SKILL.md` |
 | Server config | `~/.openclaw/openclaw.json` (bridge entry added) |
 
@@ -99,7 +99,7 @@ On first launch it:
 1. Detects your OS and architecture → maps to a .NET Runtime Identifier (RID)
 2. Looks for a local build first (for developers who run `publish.sh`)
 3. Downloads the correct pre-built binary from GitHub Releases if needed
-4. Caches it in `~/.digitraver/mcp/bridge/{version}/{rid}/` (persists across re-clones)
+4. Caches it in `~/.digitraver/mcp/bridge/{rid}/` (persists across re-clones)
 5. Spawns the MCP server with stdio inherited
 
 ### Binary Search Order
@@ -107,7 +107,7 @@ On first launch it:
 The launcher checks for the server binary in this order:
 
 1. **Project-local**: `bin/publish/{rid}/` — output from `publish.sh`
-2. **User cache**: `~/.digitraver/mcp/bridge/{version}/{rid}/` — auto-downloaded binaries
+2. **User cache**: `~/.digitraver/mcp/bridge/{rid}/` — auto-downloaded binaries
 3. **Auto-download**: fetches from GitHub Releases → saved to user cache
 4. **Fallback**: `dotnet run --project .` (requires .NET 8 SDK)
 
@@ -182,13 +182,13 @@ If auto-download doesn't work (e.g., no internet, corporate firewall), download 
    - `DigitRaverHelperMCP-osx-x64` (macOS Intel)
    - `DigitRaverHelperMCP-linux-x64` (Linux x64)
    - `DigitRaverHelperMCP-linux-arm64` (Linux ARM64)
-3. Place in `~/.digitraver/mcp/bridge/{version}/{rid}/` and rename to `DigitRaverHelperMCP` (or `.exe` on Windows):
+3. Place in `~/.digitraver/mcp/bridge/{rid}/` and rename to `DigitRaverHelperMCP` (or `.exe` on Windows):
 
 ```bash
-# Example: macOS Apple Silicon, version 1.0.0
-mkdir -p ~/.digitraver/mcp/bridge/1.0.0/osx-arm64
-mv DigitRaverHelperMCP-osx-arm64 ~/.digitraver/mcp/bridge/1.0.0/osx-arm64/DigitRaverHelperMCP
-chmod +x ~/.digitraver/mcp/bridge/1.0.0/osx-arm64/DigitRaverHelperMCP
+# Example: macOS Apple Silicon
+mkdir -p ~/.digitraver/mcp/bridge/osx-arm64
+mv DigitRaverHelperMCP-osx-arm64 ~/.digitraver/mcp/bridge/osx-arm64/DigitRaverHelperMCP
+chmod +x ~/.digitraver/mcp/bridge/osx-arm64/DigitRaverHelperMCP
 ```
 
 ## Development
