@@ -81,6 +81,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/$TAG"
+          NOTES="## Install
+
+          **macOS / Linux:**
+          \`\`\`
+          curl -fsSL $BASE/install.sh | bash
+          \`\`\`
+
+          **Windows (PowerShell):**
+          \`\`\`
+          irm $BASE/install.ps1 | iex
+          \`\`\`
+
+          **Uninstall:**
+          \`\`\`
+          curl -fsSL $BASE/install.sh | bash -s -- --uninstall
+          \`\`\`"
+          echo "$NOTES" | sed 's/^          //' > /tmp/release-notes.md
           gh release create "$TAG" release-assets/* \
             --title "Bridge MCP $TAG" \
-            --generate-notes
+            --notes-file /tmp/release-notes.md
