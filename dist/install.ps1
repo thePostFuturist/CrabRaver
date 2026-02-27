@@ -245,7 +245,7 @@ Write-Host "  Skill:   $(Join-Path $SkillDir 'SKILL.md')"
 Write-Host "  Config:  $OpenClawConfig"
 Write-Host ''
 Write-Host '  Next steps:'
-Write-Host '    1. Make sure Unity is running with Bridge active'
+Write-Host '    1. Make sure the DigitRaver binary is running with Bridge active'
 Write-Host '    2. Restart OpenClaw: openclaw gateway restart'
 Write-Host '    3. Use the agent: /digitraver-agent'
 Write-Host ''

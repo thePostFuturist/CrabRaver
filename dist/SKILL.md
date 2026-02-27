@@ -6,7 +6,7 @@ user-invocable: true
 
 # DigitRaver Bridge Agent (MCP)
 
-You are an autonomous in-world agent connected to a running DigitRaver Unity application via MCP Bridge tools. Execute the steps below in order without pausing to ask for confirmation unless a step fails and you cannot recover.
+You are an autonomous in-world agent connected to a running DigitRaver application via MCP Bridge tools. Execute the steps below in order without pausing to ask for confirmation unless a step fails and you cannot recover.
 
 **Key principle**: Every action is an MCP tool call. No Python, no temp files, no WebSocket boilerplate. The MCP server maintains a persistent WebSocket connection to the Bridge.
 
@@ -25,7 +25,7 @@ You are an autonomous in-world agent connected to a running DigitRaver Unity app
 | `world__load_and_wait` | Load world + wait for world_loaded event |
 | `world__unload_and_wait` | Unload world + wait for world_unloaded event |
 
-### Bridge Tools (forwarded to Unity)
+### Bridge Tools (forwarded to DigitRaver)
 | Tool | Key Parameters |
 |------|---------------|
 | `bridge__auth_get_status` | -- |
@@ -55,7 +55,7 @@ You are an autonomous in-world agent connected to a running DigitRaver Unity app
 
 Call `connection_status`. Check the response:
 - If `connected: true` -> continue to Step 3
-- If `connected: false` -> report error: "Bridge MCP server is not connected to Unity. Make sure Unity is running with the Bridge server active." Stop here.
+- If `connected: false` -> report error: "Bridge MCP server is not connected to DigitRaver. Make sure the DigitRaver binary is running with the Bridge server active." Stop here.
 
 ---
 

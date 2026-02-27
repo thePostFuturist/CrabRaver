@@ -240,7 +240,7 @@ print(f'[install] OpenClaw config updated: {config_path}', file=sys.stderr)
   echo "  Config:  $OPENCLAW_CONFIG"
   echo ""
   echo "  Next steps:"
-  echo "    1. Make sure Unity is running with Bridge active"
+  echo "    1. Make sure the DigitRaver binary is running with Bridge active"
   echo "    2. Restart OpenClaw: openclaw gateway restart"
   echo "    3. Use the agent: /digitraver-agent"
   echo ""
