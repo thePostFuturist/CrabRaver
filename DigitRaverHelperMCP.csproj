@@ -7,6 +7,7 @@
     <AssemblyName>DigitRaverHelperMCP</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Version>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)VERSION').Trim())</Version>
   </PropertyGroup>
 
   <!-- Self-contained publish settings (RID supplied by -r flag in publish.sh / CI) -->

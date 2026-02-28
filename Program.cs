@@ -1,3 +1,4 @@
+using System.Reflection;
 using DigitRaverHelperMCP;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -67,7 +68,9 @@ builder.Services
         options.ServerInfo = new()
         {
             Name = "digitraver-bridge",
-            Version = "3.0.0"
+            Version = Assembly.GetExecutingAssembly()
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                ?.InformationalVersion ?? "0.0.0"
         };
     })
     .WithStdioServerTransport()
