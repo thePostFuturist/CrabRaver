@@ -30,7 +30,7 @@ public class BridgeToolRegistry
     /// Load tool definitions from the Bridge server via WebSocket.
     /// Falls back to local-only tools if Bridge is unavailable.
     /// </summary>
-    public async Task LoadToolsAsync(BridgeWebSocketClient client)
+    public async Task LoadToolsAsync(BridgeWebSocketServer client)
     {
         var sw = Stopwatch.StartNew();
         try
@@ -126,7 +126,7 @@ public class BridgeToolRegistry
     /// <summary>
     /// Dispatch a tool call to the Bridge or handle locally.
     /// </summary>
-    public async Task<CallToolResult> DispatchAsync(string toolName, IDictionary<string, JsonElement>? arguments, BridgeWebSocketClient client)
+    public async Task<CallToolResult> DispatchAsync(string toolName, IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         if (!_tools.TryGetValue(toolName, out var entry))
         {
@@ -357,7 +357,7 @@ public class BridgeToolRegistry
             entry.InputSchemaJsonElement = ConvertToJsonElement(entry.InputSchemaNewtonsoft);
     }
 
-    private async Task<CallToolResult> HandleLocalToolAsync(ToolRegistryEntry entry, IDictionary<string, JsonElement>? arguments, BridgeWebSocketClient client)
+    private async Task<CallToolResult> HandleLocalToolAsync(ToolRegistryEntry entry, IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         switch (entry.Name)
         {
@@ -374,7 +374,7 @@ public class BridgeToolRegistry
                 var status = new JObject
                 {
                     ["connected"] = client.IsConnected,
-                    ["host"] = client.Host,
+                    ["bind"] = client.Bind,
                     ["port"] = client.Port,
                     ["uptimeSeconds"] = (int)client.Uptime.TotalSeconds,
                     ["reconnectCount"] = client.ReconnectCount,
@@ -520,7 +520,7 @@ public class BridgeToolRegistry
         return array.ToString(Formatting.Indented);
     }
 
-    private async Task<CallToolResult> HandleLoadAndWaitAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketClient client)
+    private async Task<CallToolResult> HandleLoadAndWaitAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         var args = ConvertArguments(arguments);
         var station = args?["station"]?.ToString();
@@ -626,7 +626,7 @@ public class BridgeToolRegistry
         }
     }
 
-    private async Task<CallToolResult> HandleUnloadAndWaitAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketClient client)
+    private async Task<CallToolResult> HandleUnloadAndWaitAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         var args = ConvertArguments(arguments);
         var timeout = args?["timeout"]?.Value<int>() ?? 30000;
@@ -719,7 +719,7 @@ public class BridgeToolRegistry
         }
     }
 
-    private async Task<CallToolResult> HandleNavWalkToAndWaitAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketClient client)
+    private async Task<CallToolResult> HandleNavWalkToAndWaitAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         var args = ConvertArguments(arguments);
 
@@ -850,7 +850,7 @@ public class BridgeToolRegistry
         }
     }
 
-    private async Task<CallToolResult> HandleInitChecklistAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketClient client)
+    private async Task<CallToolResult> HandleInitChecklistAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         var args = ConvertArguments(arguments);
         var subscribe = args?["subscribe"]?.Value<bool>() ?? true;
@@ -988,7 +988,7 @@ public class BridgeToolRegistry
     /// Safely query a Bridge domain/action. Returns the payload on success, or an error JObject on failure.
     /// Never throws — failures are captured as { "error": "..." }.
     /// </summary>
-    private async Task<JObject?> SafeQueryAsync(BridgeWebSocketClient client, string domain, string action)
+    private async Task<JObject?> SafeQueryAsync(BridgeWebSocketServer client, string domain, string action)
     {
         try
         {
@@ -1006,7 +1006,7 @@ public class BridgeToolRegistry
         }
     }
 
-    private async Task<CallToolResult> HandleScreenshot(BridgeWebSocketClient client, JObject? payload)
+    private async Task<CallToolResult> HandleScreenshot(BridgeWebSocketServer client, JObject? payload)
     {
         try
         {
@@ -1066,7 +1066,7 @@ public class BridgeToolRegistry
         }
     }
 
-    private async Task<CallToolResult> ExecuteBridgeCommand(BridgeWebSocketClient client, string domain, string action, JObject? payload)
+    private async Task<CallToolResult> ExecuteBridgeCommand(BridgeWebSocketServer client, string domain, string action, JObject? payload)
     {
         try
         {

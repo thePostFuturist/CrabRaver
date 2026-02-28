@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -10,25 +13,28 @@ using Newtonsoft.Json.Linq;
 namespace DigitRaverHelperMCP;
 
 /// <summary>
-/// Persistent WebSocket client that connects to the Bridge server.
-/// Maintains a single connection and correlates request/response by message ID.
+/// WebSocket SERVER that listens for a single Unity Bridge connection.
+/// Replaces BridgeWebSocketClient — same public API for BridgeToolRegistry.
+/// Uses TcpListener + manual WebSocket upgrade (no HttpListener/Kestrel needed).
 /// </summary>
-public class BridgeWebSocketClient : IDisposable
+public class BridgeWebSocketServer : IDisposable
 {
-    private readonly string _host;
+    private readonly string _bind;
     private readonly int _port;
     private readonly int _timeoutMs;
-    private readonly ILogger<BridgeWebSocketClient> _logger;
+    private readonly ILogger<BridgeWebSocketServer> _logger;
 
-    private ClientWebSocket? _ws;
+    private TcpListener? _listener;
+    private WebSocket? _ws;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
+    private Task? _acceptTask;
     private Task? _keepaliveTask;
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
-    // Event buffering for Phase 2.2 polling
+    // Event buffering
     private readonly ConcurrentQueue<MessageEnvelope> _eventBuffer = new();
     private readonly HashSet<string> _activeSubscriptions = new();
     private readonly object _subscriptionLock = new();
@@ -40,25 +46,24 @@ public class BridgeWebSocketClient : IDisposable
         Converters = { new StringEnumConverter() }
     };
 
-    // Receive buffer: 512KB for large screenshot responses
     private const int ReceiveBufferSize = 524288;
     private const int KeepaliveIntervalSeconds = 30;
     private const int KeepaliveTimeoutSeconds = 10;
-    private const int MaxReconnectAttempts = 3;
 
     private DateTime _connectedAt;
     private int _reconnectCount;
     private string? _lastError;
     private bool _disposed;
-    private TaskCompletionSource<bool>? _receiveReady;
 
-    // Keepalive health tracking
     private DateTime? _lastKeepaliveAt;
     private DateTime? _lastKeepaliveResponseAt;
     internal long _lastCallDurationMs;
 
+    // WebSocket handshake constants
+    private const string WsGuid = "258EAFA5-E914-47DA-95CA-5AB5FDF5E3F0";
+
     public bool IsConnected => _ws?.State == WebSocketState.Open;
-    public string Host => _host;
+    public string Bind => _bind;
     public int Port => _port;
     public int ReconnectCount => _reconnectCount;
     public string? LastError => _lastError;
@@ -67,77 +72,180 @@ public class BridgeWebSocketClient : IDisposable
     public DateTime? LastKeepaliveResponseAt => _lastKeepaliveResponseAt;
     public long LastCallDurationMs => _lastCallDurationMs;
 
-    public BridgeWebSocketClient(string host, int port, int timeoutMs, ILogger<BridgeWebSocketClient> logger)
+    public BridgeWebSocketServer(string bind, int port, int timeoutMs, ILogger<BridgeWebSocketServer> logger)
     {
-        _host = host;
+        _bind = bind;
         _port = port;
         _timeoutMs = timeoutMs;
         _logger = logger;
     }
 
-    public async Task ConnectAsync()
+    /// <summary>
+    /// Start listening for WebSocket connections from Unity.
+    /// Returns immediately — accepts connections in the background.
+    /// </summary>
+    public Task StartListeningAsync()
     {
-        var delays = new[] { 2000, 4000, 8000 };
+        var ip = IPAddress.Parse(_bind);
+        _listener = new TcpListener(ip, _port);
+        _listener.Start();
 
-        for (int attempt = 0; attempt <= MaxReconnectAttempts; attempt++)
+        _logger.LogInformation("Listening for Unity Bridge on {Bind}:{Port}", _bind, _port);
+
+        _acceptTask = Task.Run(AcceptLoopAsync);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Wait for the first Unity connection with a timeout.
+    /// Returns true if Unity connected, false if timed out.
+    /// </summary>
+    public async Task<bool> WaitForConnectionAsync(int timeoutMs)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
         {
+            if (IsConnected) return true;
+            await Task.Delay(100);
+        }
+        return IsConnected;
+    }
+
+    private async Task AcceptLoopAsync()
+    {
+        while (!_disposed && _listener != null)
+        {
+            TcpClient? tcp = null;
             try
             {
-                _ws?.Dispose();
-                _ws = new ClientWebSocket();
-                _ws.Options.SetBuffer(ReceiveBufferSize, 65536);
+                tcp = await _listener.AcceptTcpClientAsync();
+                _logger.LogInformation("TCP connection accepted from {Remote}", tcp.Client.RemoteEndPoint);
 
-                var uri = new Uri($"ws://{_host}:{_port}");
-                _logger.LogInformation("State: connecting → {Uri} (attempt {Attempt})", uri, attempt + 1);
+                // If we already have a connection, close it (only 1 Unity instance at a time)
+                if (_ws != null)
+                {
+                    _logger.LogInformation("Replacing existing Unity connection");
+                    _receiveCts?.Cancel();
+                    try { await (_receiveTask ?? Task.CompletedTask); } catch { }
+                    try { _ws.Dispose(); } catch { }
+                    _ws = null;
+                }
 
-                using var connectCts = new CancellationTokenSource(_timeoutMs);
-                await _ws.ConnectAsync(uri, connectCts.Token);
+                var stream = tcp.GetStream();
+                var ws = await PerformWebSocketHandshakeAsync(stream);
+                if (ws == null)
+                {
+                    _logger.LogWarning("WebSocket handshake failed");
+                    tcp.Close();
+                    continue;
+                }
 
+                _ws = ws;
                 _connectedAt = DateTime.UtcNow;
                 _lastError = null;
                 _lastKeepaliveAt = null;
                 _lastKeepaliveResponseAt = null;
-                _logger.LogInformation("State: connected → {Uri}", uri);
 
-                // Start receive loop
+                _logger.LogInformation("State: connected — Unity Bridge connected");
+
                 _receiveCts = new CancellationTokenSource();
-                _receiveReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _receiveTask = Task.Run(() => ReceiveLoopAsync(_receiveCts.Token));
-
-                // Wait for receive loop to be ready before returning
-                await _receiveReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-                // Start keepalive
                 _keepaliveTask = Task.Run(() => KeepaliveLoopAsync(_receiveCts.Token));
 
-                // Re-register event subscriptions (critical after reconnect — new connection has zero subscriptions)
                 await ResubscribeAllAsync();
 
-                return;
+                // Wait for the receive loop to finish (Unity disconnected)
+                await _receiveTask;
+
+                _logger.LogInformation("State: disconnected — Unity Bridge disconnected, waiting for reconnection...");
+                _reconnectCount++;
+            }
+            catch (ObjectDisposedException)
+            {
+                break; // Listener was stopped
+            }
+            catch (SocketException) when (_disposed)
+            {
+                break;
             }
             catch (Exception ex)
             {
-                _lastError = ex.Message;
-                _logger.LogWarning("Connection attempt {Attempt} failed: {Error}", attempt + 1, ex.Message);
-
-                if (attempt < MaxReconnectAttempts)
-                {
-                    await Task.Delay(delays[Math.Min(attempt, delays.Length - 1)]);
-                }
+                _logger.LogWarning("Accept error: {Error}", ex.Message);
+                tcp?.Close();
+                await Task.Delay(1000); // Brief pause before accepting again
             }
         }
+    }
 
-        _logger.LogError("Failed to connect after {MaxAttempts} attempts", MaxReconnectAttempts + 1);
+    private async Task<WebSocket?> PerformWebSocketHandshakeAsync(NetworkStream stream)
+    {
+        try
+        {
+            // Read HTTP request headers
+            var headerBuilder = new StringBuilder();
+            var buffer = new byte[4096];
+            var headerComplete = false;
+
+            while (!headerComplete)
+            {
+                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                if (bytesRead == 0) return null;
+
+                headerBuilder.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
+                if (headerBuilder.ToString().Contains("\r\n\r\n"))
+                    headerComplete = true;
+            }
+
+            var request = headerBuilder.ToString();
+
+            // Extract Sec-WebSocket-Key
+            string? wsKey = null;
+            foreach (var line in request.Split("\r\n"))
+            {
+                if (line.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase))
+                {
+                    wsKey = line.Substring("Sec-WebSocket-Key:".Length).Trim();
+                    break;
+                }
+            }
+
+            if (wsKey == null)
+            {
+                _logger.LogWarning("No Sec-WebSocket-Key in request");
+                return null;
+            }
+
+            // Compute accept key
+            var acceptKey = Convert.ToBase64String(
+                SHA1.HashData(Encoding.UTF8.GetBytes(wsKey + WsGuid))
+            );
+
+            // Send HTTP 101 response
+            var response = "HTTP/1.1 101 Switching Protocols\r\n" +
+                           "Upgrade: websocket\r\n" +
+                           "Connection: Upgrade\r\n" +
+                           $"Sec-WebSocket-Accept: {acceptKey}\r\n" +
+                           "\r\n";
+
+            var responseBytes = Encoding.UTF8.GetBytes(response);
+            await stream.WriteAsync(responseBytes, 0, responseBytes.Length);
+            await stream.FlushAsync();
+
+            // Create WebSocket from the upgraded stream
+            return WebSocket.CreateFromStream(stream, isServer: true, subProtocol: null,
+                keepAliveInterval: TimeSpan.FromSeconds(30));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("WebSocket handshake error: {Error}", ex.Message);
+            return null;
+        }
     }
 
     public async Task<MessageEnvelope> SendCommandAsync(string domain, string action, JObject? payload = null, int? timeoutMs = null)
     {
         if (!IsConnected)
-        {
-            await ReconnectAsync();
-            if (!IsConnected)
-                throw new InvalidOperationException($"Not connected to Bridge at ws://{_host}:{_port}");
-        }
+            throw new InvalidOperationException("Unity Bridge not connected");
 
         var envelope = new MessageEnvelope
         {
@@ -190,14 +298,12 @@ public class BridgeWebSocketClient : IDisposable
 
         while (!ct.IsCancellationRequested && _ws?.State == WebSocketState.Open)
         {
-            _receiveReady?.TrySetResult(true);
-
             try
             {
                 var result = await ReceiveFullMessageAsync(buffer, ct);
                 if (result.messageType == WebSocketMessageType.Close)
                 {
-                    _logger.LogInformation("Bridge server closed connection");
+                    _logger.LogInformation("Unity Bridge closed connection");
                     break;
                 }
 
@@ -239,28 +345,13 @@ public class BridgeWebSocketClient : IDisposable
             }
         }
 
-        // If connection dropped unexpectedly, fail all pending requests
+        // Fail all pending requests
         foreach (var kvp in _pending)
         {
             if (_pending.TryRemove(kvp.Key, out var tcs))
             {
                 tcs.TrySetException(new WebSocketException("Connection lost"));
             }
-        }
-
-        // Auto-reconnect if exit was unexpected (not cancellation, not disposal)
-        if (!ct.IsCancellationRequested && !_disposed)
-        {
-            _logger.LogInformation("State: disconnected — connection dropped, scheduling reconnect...");
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(1000);
-                if (!_disposed)
-                {
-                    try { await ReconnectAsync(); }
-                    catch (Exception ex) { _logger.LogWarning("Auto-reconnect failed: {Error}", ex.Message); }
-                }
-            });
         }
 
         _logger.LogDebug("Receive loop ended");
@@ -283,7 +374,6 @@ public class BridgeWebSocketClient : IDisposable
             if (result.EndOfMessage)
                 return (result.MessageType, totalBytes);
 
-            // Message larger than buffer — expand
             if (totalBytes >= buffer.Length)
             {
                 var newBuffer = new byte[buffer.Length * 2];
@@ -301,7 +391,7 @@ public class BridgeWebSocketClient : IDisposable
             {
                 await Task.Delay(TimeSpan.FromSeconds(KeepaliveIntervalSeconds), ct);
 
-                if (!IsConnected) continue;
+                if (!IsConnected) break;
 
                 _lastKeepaliveAt = DateTime.UtcNow;
                 var sw = Stopwatch.StartNew();
@@ -316,13 +406,13 @@ public class BridgeWebSocketClient : IDisposable
                 catch (TimeoutException)
                 {
                     sw.Stop();
-                    _logger.LogWarning("Keepalive timeout after {Elapsed}ms — triggering reconnect", sw.ElapsedMilliseconds);
-
-                    if (!ct.IsCancellationRequested && !_disposed)
+                    _logger.LogWarning("Keepalive timeout after {Elapsed}ms — closing connection", sw.ElapsedMilliseconds);
+                    try
                     {
-                        try { await ReconnectAsync(); }
-                        catch (Exception rex) { _logger.LogWarning("Keepalive-triggered reconnect failed: {Error}", rex.Message); }
+                        await _ws!.CloseAsync(WebSocketCloseStatus.NormalClosure, "Keepalive timeout", CancellationToken.None);
                     }
+                    catch { }
+                    break;
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -336,31 +426,10 @@ public class BridgeWebSocketClient : IDisposable
         }
     }
 
-    private async Task ReconnectAsync()
-    {
-        _logger.LogInformation("State: disconnected → reconnecting...");
-        _receiveCts?.Cancel();
-        if (_receiveTask != null)
-        {
-            try { await Task.WhenAny(_receiveTask, Task.Delay(3000)); }
-            catch { /* old loop may fault — safe to ignore */ }
-        }
-        _reconnectCount++;
-        await ConnectAsync();
-    }
-
-    /// <summary>
-    /// Subscribe to a Bridge event type. Sends a WebSocket subscribe message and tracks the subscription
-    /// for automatic re-registration on reconnect.
-    /// </summary>
     public async Task<MessageEnvelope> SubscribeAsync(string domain, string action)
     {
         if (!IsConnected)
-        {
-            await ReconnectAsync();
-            if (!IsConnected)
-                throw new InvalidOperationException($"Not connected to Bridge at ws://{_host}:{_port}");
-        }
+            throw new InvalidOperationException("Unity Bridge not connected");
 
         var key = $"{domain}.{action}";
         var envelope = new MessageEnvelope
@@ -397,7 +466,6 @@ public class BridgeWebSocketClient : IDisposable
 
             var response = await tcs.Task;
 
-            // Track subscription on success
             lock (_subscriptionLock)
             {
                 _activeSubscriptions.Add(key);
@@ -416,17 +484,10 @@ public class BridgeWebSocketClient : IDisposable
         }
     }
 
-    /// <summary>
-    /// Unsubscribe from a Bridge event type. Sends a WebSocket unsubscribe message and removes tracking.
-    /// </summary>
     public async Task<MessageEnvelope> UnsubscribeAsync(string domain, string action)
     {
         if (!IsConnected)
-        {
-            await ReconnectAsync();
-            if (!IsConnected)
-                throw new InvalidOperationException($"Not connected to Bridge at ws://{_host}:{_port}");
-        }
+            throw new InvalidOperationException("Unity Bridge not connected");
 
         var key = $"{domain}.{action}";
         var envelope = new MessageEnvelope
@@ -481,9 +542,6 @@ public class BridgeWebSocketClient : IDisposable
         }
     }
 
-    /// <summary>
-    /// Drain up to maxEvents from the event buffer. Returns all drained events.
-    /// </summary>
     public List<MessageEnvelope> DrainEvents(int maxEvents = 50)
     {
         var result = new List<MessageEnvelope>();
@@ -494,9 +552,6 @@ public class BridgeWebSocketClient : IDisposable
         return result;
     }
 
-    /// <summary>
-    /// Drain events matching a specific domain and/or action. Non-matching events are re-enqueued.
-    /// </summary>
     public List<MessageEnvelope> DrainEventsFiltered(string? domain, string? action, int maxEvents = 50)
     {
         var matched = new List<MessageEnvelope>();
@@ -517,7 +572,6 @@ public class BridgeWebSocketClient : IDisposable
             }
         }
 
-        // Re-enqueue non-matching events
         foreach (var evt in requeue)
         {
             _eventBuffer.Enqueue(evt);
@@ -526,9 +580,6 @@ public class BridgeWebSocketClient : IDisposable
         return matched;
     }
 
-    /// <summary>
-    /// Returns the set of currently active subscriptions (for diagnostics).
-    /// </summary>
     public List<string> GetActiveSubscriptions()
     {
         lock (_subscriptionLock)
@@ -542,7 +593,6 @@ public class BridgeWebSocketClient : IDisposable
         _eventBuffer.Enqueue(envelope);
         _logger.LogDebug("Event buffered: {Domain}.{Action} (buffer size: {Size})", envelope.Domain, envelope.Action, _eventBuffer.Count);
 
-        // Drop oldest events if buffer exceeds cap
         while (_eventBuffer.Count > MaxEventBufferSize)
         {
             if (_eventBuffer.TryDequeue(out _))
@@ -562,7 +612,7 @@ public class BridgeWebSocketClient : IDisposable
 
         if (subscriptions.Count == 0) return;
 
-        _logger.LogInformation("Re-registering {Count} event subscriptions after reconnect", subscriptions.Count);
+        _logger.LogInformation("Re-registering {Count} event subscriptions after Unity reconnect", subscriptions.Count);
 
         var failed = new List<string>();
         foreach (var key in subscriptions)
@@ -610,7 +660,6 @@ public class BridgeWebSocketClient : IDisposable
             }
         }
 
-        // Remove failed subscriptions
         if (failed.Count > 0)
         {
             lock (_subscriptionLock)
@@ -632,44 +681,12 @@ public class BridgeWebSocketClient : IDisposable
         _receiveCts?.Cancel();
         _receiveCts?.Dispose();
 
+        try { _listener?.Stop(); } catch { }
+
         try { _ws?.CloseAsync(WebSocketCloseStatus.NormalClosure, "MCP server shutting down", CancellationToken.None).Wait(2000); }
-        catch { /* best effort */ }
+        catch { }
 
         _ws?.Dispose();
         _sendLock.Dispose();
     }
-}
-
-// Mirror of Bridge protocol types — matches MessageEnvelope.cs wire format exactly
-[JsonConverter(typeof(StringEnumConverter))]
-public enum MessageType
-{
-    command,
-    subscribe,
-    unsubscribe,
-    @event,
-    result,
-    error
-}
-
-[Serializable]
-public class MessageEnvelope
-{
-    [JsonProperty("id")]
-    public string Id = "";
-
-    [JsonProperty("type")]
-    public MessageType Type;
-
-    [JsonProperty("domain")]
-    public string Domain = "";
-
-    [JsonProperty("action")]
-    public string Action = "";
-
-    [JsonProperty("payload", NullValueHandling = NullValueHandling.Ignore)]
-    public JObject? Payload;
-
-    [JsonProperty("timestamp", NullValueHandling = NullValueHandling.Ignore)]
-    public string? Timestamp;
 }

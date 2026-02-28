@@ -5,18 +5,18 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 // Parse CLI arguments
-var host = (string?)null; // null = not explicitly provided
+var bind = "0.0.0.0";
 var port = 18800;
 var timeout = 10000;
 var verbose = false;
-var noDiscovery = false;
+var noBeacon = false;
 
 for (int i = 0; i < args.Length; i++)
 {
     switch (args[i])
     {
-        case "--host" when i + 1 < args.Length:
-            host = args[++i];
+        case "--bind" when i + 1 < args.Length:
+            bind = args[++i];
             break;
         case "--port" when i + 1 < args.Length:
             port = int.Parse(args[++i]);
@@ -27,8 +27,8 @@ for (int i = 0; i < args.Length; i++)
         case "--verbose":
             verbose = true;
             break;
-        case "--no-discovery":
-            noDiscovery = true;
+        case "--no-beacon":
+            noBeacon = true;
             break;
     }
 }
@@ -40,7 +40,7 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
 builder.Logging.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Warning);
 
-// Build a temporary logger for discovery (before DI is ready)
+// Build a temporary logger for startup (before DI is ready)
 using var loggerFactory = LoggerFactory.Create(lb =>
 {
     lb.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
@@ -48,50 +48,13 @@ using var loggerFactory = LoggerFactory.Create(lb =>
 });
 var startupLogger = loggerFactory.CreateLogger("Startup");
 
-// Resolve host via discovery or explicit flag
-string connectionMethod;
-var discoveryMs = 0L;
-var discoverySw = System.Diagnostics.Stopwatch.StartNew();
-if (host != null)
-{
-    // Explicit --host provided
-    connectionMethod = "explicit";
-    startupLogger.LogInformation("Using explicit host: {Host}:{Port}", host, port);
-}
-else if (!noDiscovery)
-{
-    // Try UDP auto-discovery
-    startupLogger.LogInformation("No --host specified, attempting UDP discovery...");
-    var discovered = await BridgeDiscovery.DiscoverAsync(5000, startupLogger);
+startupLogger.LogInformation("MCP server starting — listening on {Bind}:{Port}", bind, port);
 
-    if (discovered != null)
-    {
-        host = discovered.Value.host;
-        port = discovered.Value.port;
-        connectionMethod = "discovered";
-        startupLogger.LogInformation("Using discovered Bridge: {Host}:{Port}", host, port);
-    }
-    else
-    {
-        host = "localhost";
-        connectionMethod = "fallback";
-        startupLogger.LogInformation("Discovery timeout, falling back to {Host}:{Port}", host, port);
-    }
-}
-else
-{
-    // Discovery disabled, use default
-    host = "localhost";
-    connectionMethod = "default";
-    startupLogger.LogInformation("Discovery disabled, using default: {Host}:{Port}", host, port);
-}
-discoveryMs = discoverySw.ElapsedMilliseconds;
-
-// Register the Bridge WebSocket client as singleton
+// Register the Bridge WebSocket server as singleton
 builder.Services.AddSingleton(sp =>
 {
-    var logger = sp.GetRequiredService<ILogger<BridgeWebSocketClient>>();
-    return new BridgeWebSocketClient(host, port, timeout, logger);
+    var logger = sp.GetRequiredService<ILogger<BridgeWebSocketServer>>();
+    return new BridgeWebSocketServer(bind, port, timeout, logger);
 });
 
 // Register the dynamic tool registry as singleton
@@ -116,30 +79,52 @@ builder.Services
     .WithCallToolHandler(async (context, _) =>
     {
         var registry = context.Services!.GetRequiredService<BridgeToolRegistry>();
-        var client = context.Services!.GetRequiredService<BridgeWebSocketClient>();
+        var server = context.Services!.GetRequiredService<BridgeWebSocketServer>();
         var toolName = context.Params?.Name ?? "";
         var arguments = context.Params?.Arguments;
-        return await registry.DispatchAsync(toolName, arguments, client);
+        return await registry.DispatchAsync(toolName, arguments, server);
     });
 
 var app = builder.Build();
 
-// Connect WebSocket client before handling MCP requests
-var connectSw = System.Diagnostics.Stopwatch.StartNew();
-var wsClient = app.Services.GetRequiredService<BridgeWebSocketClient>();
-await wsClient.ConnectAsync();
-var connectMs = connectSw.ElapsedMilliseconds;
+// Start WebSocket server (listens for Unity connections)
+var listenSw = System.Diagnostics.Stopwatch.StartNew();
+var wsServer = app.Services.GetRequiredService<BridgeWebSocketServer>();
+await wsServer.StartListeningAsync();
+var listenMs = listenSw.ElapsedMilliseconds;
 
-// Load tools from Bridge (falls back to local-only if Bridge unavailable)
+// Start beacon broadcaster (so Unity can discover us)
+BridgeBeaconBroadcaster? beacon = null;
+if (!noBeacon)
+{
+    beacon = new BridgeBeaconBroadcaster(port, startupLogger);
+    beacon.Start();
+}
+
+// Wait for Unity to connect (with timeout)
+var waitSw = System.Diagnostics.Stopwatch.StartNew();
+var connected = await wsServer.WaitForConnectionAsync(timeout);
+var waitMs = waitSw.ElapsedMilliseconds;
+
+// Load tools from Bridge (falls back to local-only if Unity not yet connected)
 var toolsSw = System.Diagnostics.Stopwatch.StartNew();
 var toolRegistry = app.Services.GetRequiredService<BridgeToolRegistry>();
-await toolRegistry.LoadToolsAsync(wsClient);
+if (connected)
+{
+    await toolRegistry.LoadToolsAsync(wsServer);
+}
+else
+{
+    startupLogger.LogWarning("Unity not connected after {Timeout}ms — starting with local-only tools. Unity can connect later.", timeout);
+}
 var toolsMs = toolsSw.ElapsedMilliseconds;
 
 // Log startup summary with timing breakdown
-var appLogger = app.Services.GetRequiredService<ILogger<BridgeWebSocketClient>>();
+var appLogger = app.Services.GetRequiredService<ILogger<BridgeWebSocketServer>>();
 appLogger.LogInformation(
-    "Bridge MCP server ready — connection: {Method}, host: {Host}:{Port}, tools: {ToolCount} (discovery: {DiscoveryMs}ms, connect: {ConnectMs}ms, tools: {ToolsMs}ms)",
-    connectionMethod, host, port, toolRegistry.ToolCount, discoveryMs, connectMs, toolsMs);
+    "Bridge MCP server ready — bind: {Bind}:{Port}, connected: {Connected}, tools: {ToolCount} (listen: {ListenMs}ms, wait: {WaitMs}ms, tools: {ToolsMs}ms)",
+    bind, port, connected, toolRegistry.ToolCount, listenMs, waitMs, toolsMs);
 
 await app.RunAsync();
+
+beacon?.Dispose();
