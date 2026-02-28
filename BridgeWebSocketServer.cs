@@ -60,7 +60,7 @@ public class BridgeWebSocketServer : IDisposable
     internal long _lastCallDurationMs;
 
     // WebSocket handshake constants
-    private const string WsGuid = "258EAFA5-E914-47DA-95CA-5AB5FDF5E3F0";
+    private const string WsGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
     public string Bind => _bind;
@@ -212,13 +212,16 @@ public class BridgeWebSocketServer : IDisposable
             if (wsKey == null)
             {
                 _logger.LogWarning("No Sec-WebSocket-Key in request");
+                _logger.LogWarning("Full request:\n{Request}", request);
                 return null;
             }
 
             // Compute accept key
-            var acceptKey = Convert.ToBase64String(
-                SHA1.HashData(Encoding.UTF8.GetBytes(wsKey + WsGuid))
-            );
+            var concatenated = wsKey + WsGuid;
+            var hashBytes = SHA1.HashData(Encoding.UTF8.GetBytes(concatenated));
+            var acceptKey = Convert.ToBase64String(hashBytes);
+
+            _logger.LogDebug("WS handshake: key={Key} accept={Accept}", wsKey, acceptKey);
 
             // Send HTTP 101 response
             var response = "HTTP/1.1 101 Switching Protocols\r\n" +
