@@ -128,6 +128,12 @@ public class BridgeToolRegistry
     /// </summary>
     public async Task<CallToolResult> DispatchAsync(string toolName, IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
+        // Lazy-load Bridge tools if Unity connected after startup
+        if (!_loaded && client.IsConnected)
+        {
+            await LoadToolsAsync(client);
+        }
+
         if (!_tools.TryGetValue(toolName, out var entry))
         {
             return new CallToolResult

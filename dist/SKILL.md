@@ -20,34 +20,52 @@ You are an autonomous in-world agent connected to a running DigitRaver applicati
 | `connection_status` | Check MCP<>Bridge connection health |
 | `events_subscribe` | Subscribe to event type (domain, action) |
 | `events_unsubscribe` | Unsubscribe from event type |
-| `events_poll` | Drain all buffered events |
+| `events_poll` | Drain all buffered events (max 50) |
 | `events_poll_filtered` | Drain events matching domain/action filter |
 | `world__load_and_wait` | Load world + wait for world_loaded event |
 | `world__unload_and_wait` | Unload world + wait for world_unloaded event |
+| `nav__walk_to_and_wait` | Walk to position + poll until arrival (`destination`, `timeout?`, `threshold?`) |
+| `init_checklist` | Batch: auth + world status + room users + party + map + optional subscribe/load (`subscribe?`, `loadWorld?`) |
 
 ### Bridge Tools (forwarded to DigitRaver)
 | Tool | Key Parameters |
 |------|---------------|
-| `bridge__auth_get_status` | -- |
-| `bridge__auth_get_room_info` | -- |
-| `bridge__auth_get_room_users` | -- |
-| `bridge__world_get_world_status` | -- |
-| `bridge__world_get_stations` | -- |
-| `bridge__nav_walk_to` | `destination: [x,y,z]` |
-| `bridge__nav_get_position` | -- |
-| `bridge__nav_get_map` | `refresh?: bool` |
-| `bridge__nav_validate_position` | `position: [x,z]` |
-| `bridge__nav_set_look` | `yaw: float`, `pitch: float` |
-| `bridge__nav_look_delta` | `x: float`, `y: float` |
-| `bridge__nav_get_look` | -- |
-| `bridge__vision_take_screenshot` | `maxWidth?: int`, `quality?: int` |
-| `bridge__party_get_members` | -- |
-| `bridge__party_go_to_member` | `ownerID: int` |
-| `bridge__ui_send_chat` | `message: string` |
-| `bridge__ui_get_chat_mode` | -- |
-| `bridge__bridge_nudge` | `message: string` |
-| `bridge__bridge_get_tools` | -- |
-| `bridge__bridge_fake_hit` | -- |
+| `auth__get_status` | -- |
+| `auth__get_room_info` | -- |
+| `auth__get_room_users` | -- |
+| `auth__sign_in_email` | `email: string`, `password: string` |
+| `auth__sign_out` | -- |
+| `auth__change_username` | `username: string` |
+| `world__get_world_status` | -- |
+| `world__get_stations` | -- |
+| `world__load_world` | `station: string` |
+| `world__unload_world` | -- |
+| `world__reload_world` | `delay?: float` (seconds) |
+| `nav__walk_to` | `destination: [x,y,z]` |
+| `nav__get_position` | -- |
+| `nav__get_map` | `refresh?: bool` |
+| `nav__validate_position` | `position: [x,z]` |
+| `nav__set_look` | `yaw: float` (deg), `pitch: float` (deg, -10 to 45) |
+| `nav__look_delta` | `x: float` (deg right), `y: float` (deg; positive=zoom out) |
+| `nav__get_look` | -- |
+| `nav__platform_tap` | `destination: [x,y,z]` |
+| `vision__take_screenshot` | `maxWidth?: int`, `quality?: int (1-100)` |
+| `party__get_members` | -- |
+| `party__go_to_member` | `ownerID: int` |
+| `ui__send_chat` | `message: string`, `targetUsername?: string` (DM) |
+| `ui__get_chat_mode` | -- |
+| `ui__set_chat_transport` | `transport: "public"\|"private"` |
+| `ui__set_chat_reach` | `reach: "global"\|"earshot"` |
+| `ui__show_popup` | `title`, `description`, `okText?`, `cancelText?`, `popupType?` |
+| `ui__select_reaction` | `reactionType: "blurbs"\|"blasts"\|"none"` |
+| `fx__dispatch_blaster` | `destination: [x,y,z]` |
+| `fx__dispatch_blurb` | `titleContent: string` |
+| `fx__set_mode` | `mode: "walk"\|"blaster"\|"platform"` |
+| `emotion__change_face` | `faceIndex: int` (1-based) |
+| `emotion__get_face_state` | `ownerID?: int`, `username?: string` |
+| `bridge__nudge` | `message: string` |
+| `bridge__get_tools` | -- |
+| `bridge__fake_hit` | -- |
 
 ---
 
@@ -63,20 +81,20 @@ Call `connection_status`. Check the response:
 
 Run these in order. Stop and report if any returns an error.
 
-1. **Auth check** -- Call `bridge__auth_get_status` -> log `isSignedIn`, `username`
+1. **Auth check** -- Call `auth__get_status` -> log `isSignedIn`, `username`
 
-2. **World status** -- Call `bridge__world_get_world_status`
+2. **World status** -- Call `world__get_world_status`
    - If `loaded == false` and `loading == false`:
-     - Call `bridge__world_get_stations` -> pick a station (prefer one with "party" in the name; otherwise use first)
+     - Call `world__get_stations` -> pick a station (prefer one with "party" in the name; otherwise use first)
      - Call `world__load_and_wait(station: "<name>")` -> waits for world to finish loading
    - If `loading == true` -> call `world__load_and_wait` with same station (it will wait for completion)
    - If `loaded == true` -> continue
 
-3. **Get map** -- Call `bridge__nav_get_map` -> extract `waypoints[]` (named points with positions) and `bounds`
+3. **Get map** -- Call `nav__get_map` -> extract `waypoints[]` (named points with positions) and `bounds`
 
 4. **Compute nav timeout** -- From bounds, calculate: `NAV_TIMEOUT = max(30, max_span / 7)` seconds, where `max_span` is the larger of X-span or Z-span. If no bounds, use 45s.
 
-5. **Get room users** -- Call `bridge__auth_get_room_users` -> snapshot users array
+5. **Get room users** -- Call `auth__get_room_users` -> snapshot users array
 
 6. **Subscribe to events** -- Make 6 calls to `events_subscribe`:
    - `(domain: "party", action: "member_joined")`
@@ -95,12 +113,12 @@ Run these in order. Stop and report if any returns an error.
 Use this procedure every time you take a screenshot:
 
 **4a. Orient camera** (optional):
-- Call `bridge__nav_set_look(yaw: <degrees>, pitch: <degrees>)`
+- Call `nav__set_look(yaw: <degrees>, pitch: <degrees>)`
 - Pitch controls zoom: -10 to 0 = close-up, 10-20 = balanced, 30-45 = bird's-eye
 - Wait ~300ms (the LLM naturally pauses between tool calls)
 
 **4b. Capture**:
-- Call `bridge__vision_take_screenshot(maxWidth: 512, quality: 75)`
+- Call `vision__take_screenshot(maxWidth: 512, quality: 75)`
 - The image is returned **inline** as an MCP image content block -- you see it directly
 - No temp files, no Read tool needed
 
@@ -129,26 +147,26 @@ Default: **8 iterations**, or until a player joins (triggers Social Mode).
 ### Each iteration (i = 1..8):
 
 **5a. Check for new players**:
-- Call `bridge__party_get_members` -> compare with `previous_roster`
+- Call `party__get_members` -> compare with `previous_roster`
 - If new non-local members found -> enter Social Mode (Step 6)
 
 **5b. Pick waypoint** -- two-phase strategy:
 - **Named waypoints first**: cycle through waypoints from `get_map` by index
 - **Roaming phase** (after all named waypoints visited, or if none exist):
-  - Get current position via `bridge__nav_get_position`
+  - Get current position via `nav__get_position`
   - Generate a random point: pick angle (0-360), distance (6-15m), compute `[x + dist*sin(angle), y, z + dist*cos(angle)]`, clamp to bounds
   - Name it "roam_N" for logging
 - **Mixed strategy** (5+ waypoints): interleave one roam point every 3 named waypoints
 
 **5c. Orient + walk**:
 - Compute direction-aware yaw: `yaw = atan2(dest_x - cur_x, dest_z - cur_z)` in degrees
-- Call `bridge__nav_set_look(yaw: <yaw>, pitch: -5)`
-- Call `bridge__nav_walk_to(destination: [x, y, z])`
+- Call `nav__set_look(yaw: <yaw>, pitch: -5)`
+- Call `nav__walk_to(destination: [x, y, z])`
 - Note the snapped destination from the response
 
 **5d. Walk-and-verify loop** (LLM polling):
 - Repeat up to 15 times (every ~2 seconds):
-  - Call `bridge__nav_get_position`
+  - Call `nav__get_position`
   - Compute distance: `sqrt((x - dest_x)^2 + (z - dest_z)^2)`
   - If distance < 2.0 -> **arrived**, exit loop
   - Track position for stall detection: if position moves < 0.5m for 5 consecutive polls -> **stalled**, exit loop early
@@ -174,7 +192,7 @@ Default: **8 iterations**, or until a player joins (triggers Social Mode).
   - "Wandering off the beaten path -- this alley is gorgeous"
 
 **5g. Send chat**:
-- Call `bridge__ui_send_chat(message: "<generated text>")`
+- Call `ui__send_chat(message: "<generated text>")`
 
 **5h. Poll events**:
 - Call `events_poll_filtered(domain: "bridge", action: "nudge_received")` -> check for nudges
@@ -196,7 +214,7 @@ Triggered when `party_get_members` shows new non-local players.
 For each new player:
 
 1. **Navigate to player**:
-   - Call `bridge__party_go_to_member(ownerID: <ownerID>)` -> get position
+   - Call `party__go_to_member(ownerID: <ownerID>)` -> get position
    - Use walk-and-verify loop (same as Step 5d) to reach member position
 
 2. **Screenshot + visual analysis** (Step 4):
@@ -210,13 +228,13 @@ For each new player:
      - "Hey <username>! Great spot you found here"
      - "Didn't expect to find anyone at the waterfall -- hi <username>!"
 
-4. **Send greeting**: Call `bridge__ui_send_chat(message: "<greeting>")`
+4. **Send greeting**: Call `ui__send_chat(message: "<greeting>")`
 
 5. **Listen for reply** (10 second window):
    - Poll 5 times, 2 seconds apart:
      - Call `events_poll_filtered(domain: "ui", action: "chat_received")`
      - Check if any event has matching username
-   - If reply found: generate contextual response and send via `bridge__ui_send_chat`
+   - If reply found: generate contextual response and send via `ui__send_chat`
    - If no reply after 10s: continue
 
 6. Resume solo loop or check for more new players
@@ -230,11 +248,11 @@ When a `nudge_received` event is found in polled events:
 Parse `payload.message` as a command:
 - **"screenshot"** -> take screenshot (Step 4) + reply with visual analysis
 - **"go to <place>"** -> find nearest matching waypoint by name, walk there
-- **"chat <text>"** -> call `bridge__ui_send_chat` with the provided text
+- **"chat <text>"** -> call `ui__send_chat` with the provided text
 - **"status"** -> reply with current waypoint + player count
 - **anything else** -> treat as conversational prompt, generate short in-world chat response
 
-Reply via: `bridge__bridge_nudge(message: "<result summary>")`
+Reply via: `bridge__nudge(message: "<result summary>")`
 
 ---
 
@@ -250,7 +268,7 @@ Run when the agent loop completes or the user interrupts.
    - `(domain: "bridge", action: "nudge_received")`
    - `(domain: "nav", action: "walk_dispatched")`
 
-2. **Farewell chat**: Call `bridge__ui_send_chat(message: "Signing off -- see you next time!")`
+2. **Farewell chat**: Call `ui__send_chat(message: "Signing off -- see you next time!")`
 
 3. **Done** -- no temp files to clean up, no connections to close (MCP server manages its own WebSocket lifecycle).
 
@@ -264,6 +282,11 @@ Run when the agent loop completes or the user interrupts.
 | `get_status` | -- | `isSignedIn`, `isPerformer`, `username` |
 | `get_room_info` | -- | `roomName`, `scenario`, `maxPopulation`, `isLive` |
 | `get_room_users` | -- | `localOwnerID`, `users[]`, `totalUsers` |
+| `sign_in_email` | `email`, `password` | sign-in result |
+| `sign_out` | -- | sign-out confirmation |
+| `change_username` | `username` | confirmation |
+
+Events: `sign_in_status` {isSignedIn}, `performer_status` {isPerformer}
 
 ### world
 | Action | Payload | Returns |
@@ -271,6 +294,8 @@ Run when the agent loop completes or the user interrupts.
 | `get_world_status` | -- | `loaded`, `loading`, `worldName`, `station` |
 | `get_stations` | -- | `stations[]` (name, isLive, isIRL) |
 | `load_world` | `station: string` | `message`, `station` |
+| `unload_world` | -- | unload confirmation |
+| `reload_world` | `delay?: float` (seconds) | reload confirmation |
 
 Events: `world_loaded` {station, worldName}, `world_unloaded` {station}
 
@@ -284,6 +309,7 @@ Events: `world_loaded` {station, worldName}, `world_unloaded` {station}
 | `look_delta` | `x: float` (deg), `y: float` (vertical delta in degrees; positive=zoom out, negative=zoom in) | `yaw: float`, `pitch: float` |
 | `set_look` | `yaw: float` (deg), `pitch: float` (deg, -10 to 45; low=zoomed in, high=zoomed out) | `yaw: float`, `pitch: float` |
 | `get_look` | -- | `yaw: float`, `pitch: float` |
+| `platform_tap` | `destination: [x,y,z]` | tap result on moving platform |
 
 Events: `walk_dispatched` {destination, performerId}
 
@@ -314,6 +340,23 @@ Events: `member_joined` {username, ownerID, colorIndex, joinTime},
 
 Events: `chat_received` {username, message, colorIndex, isLocation, ownerID, targetUsername, isDM}
 
+### fx
+| Action | Payload | Returns |
+|--------|---------|---------|
+| `dispatch_blaster` | `destination: [x,y,z]` | fire confirmation |
+| `dispatch_blurb` | `titleContent: string` | blurb text displayed |
+| `set_mode` | `mode: "walk"\|"blaster"\|"platform"` | mode change confirmation |
+
+Events: `blurb_received`, `blaster_received`, `blurb_depleted`, `blaster_depleted`, `mode_changed`
+
+### emotion
+| Action | Payload | Returns |
+|--------|---------|---------|
+| `change_face` | `faceIndex: int` (1-based) | face change confirmation |
+| `get_face_state` | `ownerID?: int`, `username?: string` | face expression state |
+
+Events: `face_changed` {ownerID, faceIndex}
+
 ### bridge
 | Action | Payload | Returns |
 |--------|---------|---------|
@@ -322,3 +365,13 @@ Events: `chat_received` {username, message, colorIndex, isLocation, ownerID, tar
 | `fake_hit` | -- | `message: "Fake hit dispatched"` -- triggers die animation (auto-resets after 10s) |
 
 Events: `nudge_received` {message, senderClientId}
+
+---
+
+## Tips
+
+- **Walkability grid**: `nav__get_map` returns RLE-encoded grid (`W`=walkable, `N`=non-walkable). Convert: `worldX = origin[0] + col * cellSize`, `worldZ = origin[1] + row * cellSize`. Call `nav__validate_position` to get exact Y before walking.
+- **Screenshot cost**: ~820 vision tokens at 1024px width. Use `maxWidth: 512` for routine checks.
+- **Reconnection**: If Unity restarts, the MCP server auto-reconnects. Tool calls during disconnect return errors immediately. Call `bridge__get_tools` after reconnect to refresh the tool registry.
+- **Event buffer**: 200 events max, oldest dropped when full. Poll regularly during long-running loops.
+- **Chat modes**: Default is public/global. Use `ui__set_chat_transport("private")` for DMs, `ui__set_chat_reach("earshot")` for proximity-based.

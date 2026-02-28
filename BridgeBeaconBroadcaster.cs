@@ -47,15 +47,7 @@ public class BridgeBeaconBroadcaster : IDisposable
             udp.JoinMulticastGroup(IPAddress.Parse(MulticastAddress));
             var endpoint = new IPEndPoint(IPAddress.Parse(MulticastAddress), MulticastPort);
 
-            var beacon = new
-            {
-                service = "digitraver-mcp",
-                version = 2,
-                port = _port,
-                hostname = Environment.MachineName
-            };
-
-            var json = JsonConvert.SerializeObject(beacon);
+            var json = $"{{\"service\":\"digitraver-mcp\",\"version\":2,\"port\":{_port},\"hostname\":\"{Environment.MachineName}\"}}";
             var bytes = Encoding.UTF8.GetBytes(json);
 
             while (!ct.IsCancellationRequested)

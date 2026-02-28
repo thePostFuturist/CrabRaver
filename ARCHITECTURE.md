@@ -13,8 +13,8 @@ MCP Client ←── stdio (JSON-RPC) ──→ MCP Server ←── WebSocket �
 | File | Responsibility |
 |------|---------------|
 | [`Program.cs`](Program.cs) | Entry point — CLI parsing, DI wiring, startup orchestration |
-| [`BridgeDiscovery.cs`](BridgeDiscovery.cs) | UDP multicast listener — finds the Bridge host on the LAN |
-| [`BridgeWebSocketClient.cs`](BridgeWebSocketClient.cs) | Persistent WebSocket connection — send/receive, reconnect, keepalive, event buffering |
+| [`BridgeBeaconBroadcaster.cs`](BridgeBeaconBroadcaster.cs) | UDP multicast broadcaster — advertises the MCP server on the LAN |
+| [`BridgeWebSocketServer.cs`](BridgeWebSocketServer.cs) | WebSocket server — accepts Unity connection, send/receive, keepalive, event buffering |
 | [`BridgeToolRegistry.cs`](BridgeToolRegistry.cs) | Dynamic tool registry — loads schemas from Bridge, dispatches MCP tool calls |
 | [`bridge-launcher.mjs`](bridge-launcher.mjs) | Cross-platform Node.js launcher — RID detection, binary resolution, auto-download |
 
@@ -39,7 +39,7 @@ bridge-launcher.mjs
        │     └─ retries with backoff (2s, 4s, 8s), max 3 attempts
        │
        ├─ 7. Load tools → bridge.get_tools over WebSocket
-       │     ├─ register ~15 Bridge tools (bridge__{domain}_{action})
+       │     ├─ register ~15 Bridge tools ({domain}__{action})
        │     └─ 9 local tools always registered
        │
        └─ 8. MCP stdio transport ready
@@ -72,7 +72,7 @@ MCP Client                    MCP Server                         Bridge (DigitRa
 
 **Key details:**
 
-- **Name mapping**: MCP tool name `bridge__nav_walk_to` → Bridge domain `nav`, action `walk_to`
+- **Name mapping**: MCP tool name `nav__walk_to` → Bridge domain `nav`, action `walk_to`
 - **ID correlation**: Each command gets a GUID; the receive loop matches responses by `envelope.id` via a `ConcurrentDictionary<string, TaskCompletionSource>`
 - **Serialization boundary**: MCP uses `System.Text.Json`; Bridge protocol uses `Newtonsoft.Json`. `BridgeToolRegistry` converts between them at dispatch time.
 - **Screenshots**: `vision__take_screenshot` returns base64 image data, which is wrapped as MCP `ImageContent` instead of `TextContent`
@@ -145,7 +145,7 @@ Bridge (Machine A)                              MCP Server (Machine B)
 
 ### Bridge tools (~15, dynamic)
 
-Loaded at startup from `bridge.get_tools`. Each tool's name encodes its routing: `bridge__{domain}_{action}`. The registry stores the JSON schema from the Bridge and dispatches calls as `SendCommandAsync(domain, action, payload)`.
+Loaded at startup from `bridge.get_tools`. Each tool's name encodes its routing: `{domain}__{action}`. The registry stores the JSON schema from the Bridge and dispatches calls as `SendCommandAsync(domain, action, payload)`.
 
 ### Local tools (9, static)
 
