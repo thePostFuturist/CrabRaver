@@ -27,10 +27,12 @@ const REPO = process.env.BRIDGE_REPO || "thePostFuturist/CrabRaver";
 
 function readVersion() {
   const versionFile = join(SCRIPT_DIR, "VERSION");
-  if (existsSync(versionFile)) {
-    return readFileSync(versionFile, "utf-8").trim();
+  if (!existsSync(versionFile)) {
+    diag(`ERROR: VERSION file not found at ${versionFile}`);
+    diag("This file is required and should exist alongside bridge-launcher.mjs.");
+    process.exit(1);
   }
-  return "1.0.0";
+  return readFileSync(versionFile, "utf-8").trim();
 }
 
 const VERSION = process.env.BRIDGE_VERSION || readVersion();

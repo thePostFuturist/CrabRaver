@@ -15,7 +15,13 @@ set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────
 INSTALL_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${BRIDGE_VERSION:-$(cat "$INSTALL_SCRIPT_DIR/VERSION" 2>/dev/null || echo 1.0.0)}"
+if [[ -n "${BRIDGE_VERSION:-}" ]]; then
+  VERSION="$BRIDGE_VERSION"
+elif [[ -f "$INSTALL_SCRIPT_DIR/VERSION" ]]; then
+  VERSION="$(cat "$INSTALL_SCRIPT_DIR/VERSION")"
+else
+  die "VERSION file not found and BRIDGE_VERSION not set. Set BRIDGE_VERSION=x.y.z when piping from curl."
+fi
 REPO="${BRIDGE_REPO:-thePostFuturist/CrabRaver}"
 BINARY_NAME="DigitRaverHelperMCP"
 SKILL_NAME="digitraver-agent"
@@ -156,6 +162,7 @@ do_install() {
   if [[ "$RID" != win-* ]]; then
     chmod +x "$bin_dir/$local_exe"
   fi
+  echo -n "$VERSION" > "$bin_dir/.version"
   info "Binary installed: $bin_dir/$local_exe"
 
   # ── 2. Download SKILL.md ────────────────────────────────────────────

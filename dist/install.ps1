@@ -45,7 +45,7 @@ $Version     = if ($env:BRIDGE_VERSION) {
 } elseif (Test-Path $VersionFile) {
     (Get-Content $VersionFile -Raw).Trim()
 } else {
-    '1.0.0'
+    throw "VERSION file not found and BRIDGE_VERSION not set. Set `$env:BRIDGE_VERSION='x.y.z' when piping from web."
 }
 
 $Repo        = if ($env:BRIDGE_REPO) { $env:BRIDGE_REPO } else { 'thePostFuturist/CrabRaver' }
@@ -170,6 +170,7 @@ New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 $localExe = "$BinaryName.exe"
 
 Download-Asset -AssetName $Asset -Dest (Join-Path $binDir $localExe)
+Set-Content -Path (Join-Path $binDir '.version') -Value $Version -NoNewline
 Write-Info "Binary installed: $(Join-Path $binDir $localExe)"
 
 # 2. Download SKILL.md
