@@ -62,12 +62,12 @@ NOTES="## Install
 
 **macOS / Linux:**
 \`\`\`
-curl -fsSL $BASE/install.sh | bash
+curl -fsSL $BASE/install.sh | BRIDGE_VERSION=$NEW bash
 \`\`\`
 
 **Windows (PowerShell):**
 \`\`\`
-irm $BASE/install.ps1 | iex
+\\\$env:BRIDGE_VERSION='$NEW'; irm $BASE/install.ps1 | iex
 \`\`\`
 
 **Uninstall:**
