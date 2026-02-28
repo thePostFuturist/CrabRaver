@@ -341,11 +341,16 @@ Events: `member_joined` {username, ownerID, colorIndex, joinTime},
 Events: `chat_received` {username, message, colorIndex, isLocation, ownerID, targetUsername, isDM}
 
 ### fx
+
+**Prerequisites**: A world must be loaded (`world__load_and_wait`) before dispatching FX. The dispatch commands auto-activate their panels via `ReactionBoxEvents` — no need to call `ui__select_reaction` first.
+
 | Action | Payload | Returns |
 |--------|---------|---------|
-| `dispatch_blaster` | `destination: [x,y,z]` | fire confirmation |
-| `dispatch_blurb` | `titleContent: string` | blurb text displayed |
+| `dispatch_blaster` | `destination: [x,y,z]` | fire confirmation (idempotent — auto-activates Projectiles panel, safe to call repeatedly) |
+| `dispatch_blurb` | `titleContent: string` | blurb text displayed (idempotent — auto-activates TitleFX panel, safe to call repeatedly; 4s debounce between blurbs) |
 | `set_mode` | `mode: "walk"\|"blaster"\|"platform"` | mode change confirmation |
+
+**Activation chain** (both commands): `FXDomainHandler` → `ReactionBoxEvents.InvokeReactionBoxEvent` → `ReactionBoxListener` toggles panel GO active → `FXLogicBase.OnEnable` → `Sub()` subscribes to event → then the event fires to the now-subscribed handler. All synchronous within the same frame.
 
 Events: `blurb_received`, `blaster_received`, `blurb_depleted`, `blaster_depleted`, `mode_changed`
 
