@@ -372,6 +372,6 @@ Events: `nudge_received` {message, senderClientId}
 
 - **Walkability grid**: `nav__get_map` returns RLE-encoded grid (`W`=walkable, `N`=non-walkable). Convert: `worldX = origin[0] + col * cellSize`, `worldZ = origin[1] + row * cellSize`. Call `nav__validate_position` to get exact Y before walking.
 - **Screenshot cost**: ~820 vision tokens at 1024px width. Use `maxWidth: 512` for routine checks.
-- **Reconnection**: If Unity restarts, the MCP server auto-reconnects. Tool calls during disconnect return errors immediately. Call `bridge__get_tools` after reconnect to refresh the tool registry.
+- **Reconnection**: If DigitRaver restarts, the MCP server auto-reconnects. Tool calls during disconnect return errors immediately. Call `bridge__get_tools` after reconnect to refresh the tool registry.
 - **Event buffer**: 200 events max, oldest dropped when full. Poll regularly during long-running loops.
 - **Chat modes**: Default is public/global. Use `ui__set_chat_transport("private")` for DMs, `ui__set_chat_reach("earshot")` for proximity-based.

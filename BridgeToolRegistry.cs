@@ -104,6 +104,25 @@ public class BridgeToolRegistry
     }
 
     /// <summary>
+    /// Reload tools from Bridge after a reconnect.
+    /// Clears non-local tools and re-fetches from the Bridge server.
+    /// </summary>
+    public async Task ReloadToolsAsync(BridgeWebSocketServer client)
+    {
+        _logger.LogInformation("Reloading tools after Unity reconnect...");
+
+        // Remove all non-local tools
+        var bridgeKeys = _tools.Where(kvp => !kvp.Value.IsLocal).Select(kvp => kvp.Key).ToList();
+        foreach (var key in bridgeKeys)
+            _tools.Remove(key);
+
+        _loaded = false;
+        await LoadToolsAsync(client);
+
+        _logger.LogInformation("Tools reloaded after reconnect — {Count} total", _tools.Count);
+    }
+
+    /// <summary>
     /// Returns all registered tools for MCP tools/list requests.
     /// </summary>
     public ListToolsResult GetToolList()

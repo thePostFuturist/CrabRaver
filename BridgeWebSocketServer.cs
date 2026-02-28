@@ -47,8 +47,8 @@ public class BridgeWebSocketServer : IDisposable
     };
 
     private const int ReceiveBufferSize = 524288;
-    private const int KeepaliveIntervalSeconds = 30;
-    private const int KeepaliveTimeoutSeconds = 10;
+    private const int KeepaliveIntervalSeconds = 10;
+    private const int KeepaliveTimeoutSeconds = 15;
 
     private DateTime _connectedAt;
     private int _reconnectCount;
@@ -61,6 +61,8 @@ public class BridgeWebSocketServer : IDisposable
 
     // WebSocket handshake constants
     private const string WsGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+    public event Func<Task>? OnReconnected;
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
     public string Bind => _bind;
@@ -121,6 +123,12 @@ public class BridgeWebSocketServer : IDisposable
                 tcp = await _listener.AcceptTcpClientAsync();
                 _logger.LogInformation("TCP connection accepted from {Remote}", tcp.Client.RemoteEndPoint);
 
+                // Enable TCP keepalive — OS-level safety net for dead connections
+                tcp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                tcp.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 10);
+                tcp.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+                tcp.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
+
                 // If we already have a connection, close it (only 1 Unity instance at a time)
                 if (_ws != null)
                 {
@@ -153,6 +161,13 @@ public class BridgeWebSocketServer : IDisposable
                 _keepaliveTask = Task.Run(() => KeepaliveLoopAsync(_receiveCts.Token));
 
                 await ResubscribeAllAsync();
+
+                // Notify listeners that Unity reconnected (e.g., to reload tools)
+                if (OnReconnected != null)
+                {
+                    try { await OnReconnected.Invoke(); }
+                    catch (Exception ex) { _logger.LogWarning("OnReconnected handler failed: {Error}", ex.Message); }
+                }
 
                 // Wait for the receive loop to finish (Unity disconnected)
                 await _receiveTask;
@@ -236,7 +251,7 @@ public class BridgeWebSocketServer : IDisposable
 
             // Create WebSocket from the upgraded stream
             return WebSocket.CreateFromStream(stream, isServer: true, subProtocol: null,
-                keepAliveInterval: TimeSpan.FromSeconds(30));
+                keepAliveInterval: TimeSpan.FromSeconds(10));
         }
         catch (Exception ex)
         {
@@ -401,7 +416,7 @@ public class BridgeWebSocketServer : IDisposable
 
                 try
                 {
-                    await SendCommandAsync("auth", "get_status", timeoutMs: KeepaliveTimeoutSeconds * 1000);
+                    await SendCommandAsync("bridge", "ping", timeoutMs: KeepaliveTimeoutSeconds * 1000);
                     sw.Stop();
                     _lastKeepaliveResponseAt = DateTime.UtcNow;
                     _logger.LogDebug("Keepalive OK ({Elapsed}ms)", sw.ElapsedMilliseconds);

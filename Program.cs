@@ -122,6 +122,19 @@ else
 }
 var toolsMs = toolsSw.ElapsedMilliseconds;
 
+// Wire reconnect → reload tools
+wsServer.OnReconnected += async () =>
+{
+    try
+    {
+        await toolRegistry.ReloadToolsAsync(wsServer);
+    }
+    catch (Exception ex)
+    {
+        startupLogger.LogWarning("Failed to reload tools after reconnect: {Error}", ex.Message);
+    }
+};
+
 // Log startup summary with timing breakdown
 var appLogger = app.Services.GetRequiredService<ILogger<BridgeWebSocketServer>>();
 appLogger.LogInformation(
