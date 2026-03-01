@@ -280,7 +280,7 @@ Run when the agent loop completes or the user interrupts.
 | Action | Payload | Returns |
 |--------|---------|---------|
 | `get_status` | -- | `isSignedIn`, `isPerformer`, `username` |
-| `get_room_info` | -- | `roomName`, `scenario`, `maxPopulation`, `isLive` |
+| `get_room_info` | -- | `roomName`, `scenario`, `maxPopulation`, `isInstant` |
 | `get_room_users` | -- | `localOwnerID`, `users[]`, `totalUsers` |
 | `sign_in_email` | `email`, `password` | sign-in result |
 | `sign_out` | -- | sign-out confirmation |
@@ -291,8 +291,8 @@ Events: `sign_in_status` {isSignedIn}, `performer_status` {isPerformer}
 ### world
 | Action | Payload | Returns |
 |--------|---------|---------|
-| `get_world_status` | -- | `loaded`, `loading`, `worldName`, `station` |
-| `get_stations` | -- | `stations[]` (name, isLive, isIRL) |
+| `get_world_status` | -- | `loaded`, `loading`, `worldName`, `station`, `isInstant` |
+| `get_stations` | -- | `stations[]` (name, isInstant) |
 | `load_world` | `station: string` | `message`, `station` |
 | `unload_world` | -- | unload confirmation |
 | `reload_world` | `delay?: float` (seconds) | reload confirmation |
