@@ -25,11 +25,16 @@ public class BridgeWebSocketServer : IDisposable
     private readonly ILogger<BridgeWebSocketServer> _logger;
 
     private TcpListener? _listener;
+    private TcpListener? _relayListener;
     private WebSocket? _ws;
     private CancellationTokenSource? _receiveCts;
     private Task? _receiveTask;
     private Task? _acceptTask;
     private Task? _keepaliveTask;
+    private Task? _relayAcceptTask;
+    private readonly ConcurrentDictionary<Guid, RelayClientConnection> _relayClients = new();
+
+    public const int RelayPortOffset = 1; // Relay port = main port + 1
 
     private readonly ConcurrentDictionary<string, TaskCompletionSource<MessageEnvelope>> _pending = new();
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -64,6 +69,12 @@ public class BridgeWebSocketServer : IDisposable
 
     public event Func<Task>? OnReconnected;
 
+    // Delegate for handling relay tool calls (set by Program.cs after tool registry is ready)
+    public Func<string, Dictionary<string, object?>?, Task<(bool success, string result)>>? RelayToolDispatcher { get; set; }
+
+    // Delegate for getting tool list for relay clients
+    public Func<List<object>>? RelayToolListProvider { get; set; }
+
     public bool IsConnected => _ws?.State == WebSocketState.Open;
     public string Bind => _bind;
     public int Port => _port;
@@ -83,20 +94,30 @@ public class BridgeWebSocketServer : IDisposable
     }
 
     /// <summary>
-    /// Start listening for WebSocket connections from Unity.
+    /// Start listening for WebSocket connections from Unity and relay clients.
     /// Returns immediately — accepts connections in the background.
     /// </summary>
     public Task StartListeningAsync()
     {
         var ip = IPAddress.Parse(_bind);
+
+        // Main listener for Unity Bridge connections
         _listener = new TcpListener(ip, _port);
         _listener.Start();
-
         _logger.LogInformation("Listening for Unity Bridge on {Bind}:{Port}", _bind, _port);
 
+        // Relay listener for secondary MCP instances
+        var relayPort = _port + RelayPortOffset;
+        _relayListener = new TcpListener(ip, relayPort);
+        _relayListener.Start();
+        _logger.LogInformation("Listening for relay clients on {Bind}:{RelayPort}", _bind, relayPort);
+
         _acceptTask = Task.Run(AcceptLoopAsync);
+        _relayAcceptTask = Task.Run(RelayAcceptLoopAsync);
         return Task.CompletedTask;
     }
+
+    public int RelayPort => _port + RelayPortOffset;
 
     /// <summary>
     /// Wait for the first Unity connection with a timeout.
@@ -188,6 +209,66 @@ public class BridgeWebSocketServer : IDisposable
                 _logger.LogWarning("Accept error: {Error}", ex.Message);
                 tcp?.Close();
                 await Task.Delay(1000); // Brief pause before accepting again
+            }
+        }
+    }
+
+    /// <summary>
+    /// Accept loop for relay clients (secondary MCP instances).
+    /// </summary>
+    private async Task RelayAcceptLoopAsync()
+    {
+        while (!_disposed && _relayListener != null)
+        {
+            TcpClient? tcp = null;
+            try
+            {
+                tcp = await _relayListener.AcceptTcpClientAsync();
+                var clientId = Guid.NewGuid();
+                _logger.LogInformation("Relay client connected from {Remote} (id={ClientId})",
+                    tcp.Client.RemoteEndPoint, clientId);
+
+                var stream = tcp.GetStream();
+                var ws = await PerformWebSocketHandshakeAsync(stream);
+                if (ws == null)
+                {
+                    _logger.LogWarning("Relay client WebSocket handshake failed");
+                    tcp.Close();
+                    continue;
+                }
+
+                // Create and track the relay client connection
+                var relayClient = new RelayClientConnection(clientId, ws, tcp, this, _logger);
+                _relayClients[clientId] = relayClient;
+
+                // Start handling the relay client in the background
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await relayClient.RunAsync();
+                    }
+                    finally
+                    {
+                        _relayClients.TryRemove(clientId, out _);
+                        relayClient.Dispose();
+                        _logger.LogInformation("Relay client disconnected (id={ClientId})", clientId);
+                    }
+                });
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (SocketException) when (_disposed)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Relay accept error: {Error}", ex.Message);
+                tcp?.Close();
+                await Task.Delay(1000);
             }
         }
     }
@@ -700,11 +781,292 @@ public class BridgeWebSocketServer : IDisposable
         _receiveCts?.Dispose();
 
         try { _listener?.Stop(); } catch { }
+        try { _relayListener?.Stop(); } catch { }
+
+        // Close all relay clients
+        foreach (var client in _relayClients.Values)
+        {
+            try { client.Dispose(); } catch { }
+        }
+        _relayClients.Clear();
 
         try { _ws?.CloseAsync(WebSocketCloseStatus.NormalClosure, "MCP server shutting down", CancellationToken.None).Wait(2000); }
         catch { }
 
         _ws?.Dispose();
         _sendLock.Dispose();
+    }
+}
+
+/// <summary>
+/// Represents a connected relay client (secondary MCP instance).
+/// Handles forwarding MCP JSON-RPC messages between the relay client and the primary server's tool infrastructure.
+/// </summary>
+internal class RelayClientConnection : IDisposable
+{
+    private readonly Guid _id;
+    private readonly WebSocket _ws;
+    private readonly TcpClient _tcp;
+    private readonly BridgeWebSocketServer _server;
+    private readonly ILogger _logger;
+    private readonly CancellationTokenSource _cts = new();
+    private bool _disposed;
+
+    public RelayClientConnection(Guid id, WebSocket ws, TcpClient tcp, BridgeWebSocketServer server, ILogger logger)
+    {
+        _id = id;
+        _ws = ws;
+        _tcp = tcp;
+        _server = server;
+        _logger = logger;
+    }
+
+    public async Task RunAsync()
+    {
+        var buffer = new byte[65536];
+
+        while (!_cts.IsCancellationRequested && _ws.State == WebSocketState.Open)
+        {
+            try
+            {
+                var result = await ReceiveFullMessageAsync(buffer, _cts.Token);
+                if (result.messageType == WebSocketMessageType.Close)
+                {
+                    _logger.LogDebug("Relay client {Id} closed connection", _id);
+                    break;
+                }
+
+                var message = Encoding.UTF8.GetString(buffer, 0, result.count);
+                _logger.LogDebug("Relay client {Id} sent: {Chars} chars", _id, message.Length);
+
+                // Parse the MCP JSON-RPC message
+                var jsonRpc = JObject.Parse(message);
+                var method = jsonRpc["method"]?.ToString();
+                var id = jsonRpc["id"];
+                var paramsObj = jsonRpc["params"] as JObject;
+
+                string responseJson;
+
+                if (method == "tools/list")
+                {
+                    // Return the tool list
+                    // Note: This requires access to the tool registry. For now, we'll forward to Unity.
+                    responseJson = await HandleToolsListAsync(id);
+                }
+                else if (method == "tools/call")
+                {
+                    // Forward tool call to Unity
+                    var toolName = paramsObj?["name"]?.ToString() ?? "";
+                    var arguments = paramsObj?["arguments"] as JObject;
+                    responseJson = await HandleToolCallAsync(id, toolName, arguments);
+                }
+                else
+                {
+                    // Unknown method - return error
+                    responseJson = CreateErrorResponse(id, -32601, $"Method not found: {method}");
+                }
+
+                // Send response back to relay client
+                var responseBytes = Encoding.UTF8.GetBytes(responseJson);
+                await _ws.SendAsync(new ArraySegment<byte>(responseBytes), WebSocketMessageType.Text, true, _cts.Token);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (WebSocketException ex)
+            {
+                _logger.LogDebug("Relay client {Id} WebSocket error: {Error}", _id, ex.Message);
+                break;
+            }
+            catch (JsonReaderException ex)
+            {
+                _logger.LogWarning("Relay client {Id} invalid JSON: {Error}", _id, ex.Message);
+                // Continue - don't break on bad messages
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Relay client {Id} unexpected error", _id);
+            }
+        }
+    }
+
+    private Task<string> HandleToolsListAsync(JToken? id)
+    {
+        // Use the tool list provider if available
+        if (_server.RelayToolListProvider != null)
+        {
+            try
+            {
+                var tools = _server.RelayToolListProvider();
+                var response = new JObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = id,
+                    ["result"] = new JObject
+                    {
+                        ["tools"] = JArray.FromObject(tools)
+                    }
+                };
+                return Task.FromResult(response.ToString(Formatting.None));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning("Failed to get tool list: {Error}", ex.Message);
+            }
+        }
+
+        // Fallback to empty list
+        var fallbackResponse = new JObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = id,
+            ["result"] = new JObject
+            {
+                ["tools"] = new JArray()
+            }
+        };
+        return Task.FromResult(fallbackResponse.ToString(Formatting.None));
+    }
+
+    private async Task<string> HandleToolCallAsync(JToken? id, string toolName, JObject? arguments)
+    {
+        try
+        {
+            // Use the relay tool dispatcher if available
+            if (_server.RelayToolDispatcher != null)
+            {
+                var args = arguments?.ToObject<Dictionary<string, object?>>();
+                var (success, resultText) = await _server.RelayToolDispatcher(toolName, args);
+
+                if (!success)
+                {
+                    return CreateErrorResponse(id, -32000, resultText);
+                }
+
+                var response = new JObject
+                {
+                    ["jsonrpc"] = "2.0",
+                    ["id"] = id,
+                    ["result"] = new JObject
+                    {
+                        ["content"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["type"] = "text",
+                                ["text"] = resultText
+                            }
+                        }
+                    }
+                };
+                return response.ToString(Formatting.None);
+            }
+
+            // Fallback: Forward directly to Unity via WebSocket
+            if (!_server.IsConnected)
+            {
+                return CreateErrorResponse(id, -32000, "Unity Bridge not connected");
+            }
+
+            // Parse domain and action from tool name (format: "domain_action" or just "action")
+            var parts = toolName.Split('_', 2);
+            var domain = parts.Length > 1 ? parts[0] : "bridge";
+            var action = parts.Length > 1 ? parts[1] : parts[0];
+
+            var result = await _server.SendCommandAsync(domain, action, arguments, 30000);
+
+            if (result.Type == MessageType.error)
+            {
+                return CreateErrorResponse(id, -32000, result.Payload?["error"]?.ToString() ?? "Unknown error");
+            }
+
+            var fallbackResponse = new JObject
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = id,
+                ["result"] = new JObject
+                {
+                    ["content"] = new JArray
+                    {
+                        new JObject
+                        {
+                            ["type"] = "text",
+                            ["text"] = result.Payload?.ToString(Formatting.Indented) ?? "{}"
+                        }
+                    }
+                }
+            };
+
+            return fallbackResponse.ToString(Formatting.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning("Relay tool call failed: {Error}", ex.Message);
+            return CreateErrorResponse(id, -32000, ex.Message);
+        }
+    }
+
+    private string CreateErrorResponse(JToken? id, int code, string message)
+    {
+        var response = new JObject
+        {
+            ["jsonrpc"] = "2.0",
+            ["id"] = id,
+            ["error"] = new JObject
+            {
+                ["code"] = code,
+                ["message"] = message
+            }
+        };
+        return response.ToString(Formatting.None);
+    }
+
+    private async Task<(WebSocketMessageType messageType, int count)> ReceiveFullMessageAsync(byte[] buffer, CancellationToken ct)
+    {
+        int totalBytes = 0;
+
+        while (true)
+        {
+            var segment = new ArraySegment<byte>(buffer, totalBytes, buffer.Length - totalBytes);
+            var result = await _ws.ReceiveAsync(segment, ct);
+
+            totalBytes += result.Count;
+
+            if (result.MessageType == WebSocketMessageType.Close)
+                return (WebSocketMessageType.Close, 0);
+
+            if (result.EndOfMessage)
+                return (result.MessageType, totalBytes);
+
+            if (totalBytes >= buffer.Length)
+            {
+                var newBuffer = new byte[buffer.Length * 2];
+                Buffer.BlockCopy(buffer, 0, newBuffer, 0, totalBytes);
+                buffer = newBuffer;
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _cts.Cancel();
+        _cts.Dispose();
+
+        try
+        {
+            if (_ws.State == WebSocketState.Open)
+            {
+                _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Relay closing", CancellationToken.None)
+                   .Wait(1000);
+            }
+        }
+        catch { }
+
+        _ws.Dispose();
+        _tcp.Close();
     }
 }

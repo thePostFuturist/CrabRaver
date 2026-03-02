@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
 using DigitRaverHelperMCP;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,6 +13,8 @@ var port = 18800;
 var timeout = 10000;
 var verbose = false;
 var noBeacon = false;
+var forceRelay = false;
+var forcePrimary = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -31,6 +35,12 @@ for (int i = 0; i < args.Length; i++)
         case "--no-beacon":
             noBeacon = true;
             break;
+        case "--relay":
+            forceRelay = true;
+            break;
+        case "--primary":
+            forcePrimary = true;
+            break;
     }
 }
 
@@ -48,6 +58,45 @@ using var loggerFactory = LoggerFactory.Create(lb =>
     lb.SetMinimumLevel(verbose ? LogLevel.Debug : LogLevel.Warning);
 });
 var startupLogger = loggerFactory.CreateLogger("Startup");
+
+// Check if primary server is already running (unless forced to be primary or relay)
+bool IsPortInUse(int checkPort)
+{
+    try
+    {
+        using var listener = new TcpListener(IPAddress.Any, checkPort);
+        listener.Start();
+        listener.Stop();
+        return false;
+    }
+    catch (SocketException)
+    {
+        return true;
+    }
+}
+
+if (!forcePrimary && (forceRelay || IsPortInUse(port)))
+{
+    // Primary server already running - connect as relay client
+    var relayPort = port + 1; // 18801
+    startupLogger.LogInformation("Primary server detected on port {Port}, connecting as relay client to port {RelayPort}...", port, relayPort);
+
+    var relayClient = new BridgeRelayClient("127.0.0.1", relayPort, startupLogger);
+    try
+    {
+        await relayClient.RunAsync();
+    }
+    catch (Exception ex)
+    {
+        startupLogger.LogError("Relay client failed: {Error}", ex.Message);
+        Environment.Exit(1);
+    }
+    finally
+    {
+        relayClient.Dispose();
+    }
+    return; // Exit after relay mode completes
+}
 
 startupLogger.LogInformation("MCP server starting — listening on {Bind}:{Port}", bind, port);
 
@@ -132,6 +181,44 @@ wsServer.OnReconnected += async () =>
     catch (Exception ex)
     {
         startupLogger.LogWarning("Failed to reload tools after reconnect: {Error}", ex.Message);
+    }
+};
+
+// Wire relay dispatchers so secondary MCP instances can use our tools
+wsServer.RelayToolListProvider = () =>
+{
+    var toolList = toolRegistry.GetToolList();
+    return toolList.Tools.Cast<object>().ToList();
+};
+
+wsServer.RelayToolDispatcher = async (toolName, arguments) =>
+{
+    try
+    {
+        // Convert Dictionary<string, object?> to IDictionary<string, JsonElement>
+        IDictionary<string, System.Text.Json.JsonElement>? jsonArgs = null;
+        if (arguments != null)
+        {
+            jsonArgs = new Dictionary<string, System.Text.Json.JsonElement>();
+            foreach (var kvp in arguments)
+            {
+                var jsonString = System.Text.Json.JsonSerializer.Serialize(kvp.Value);
+                using var doc = System.Text.Json.JsonDocument.Parse(jsonString);
+                jsonArgs[kvp.Key] = doc.RootElement.Clone();
+            }
+        }
+
+        var result = await toolRegistry.DispatchAsync(toolName, jsonArgs, wsServer);
+        var content = result.Content?.FirstOrDefault();
+        if (content is ModelContextProtocol.Protocol.TextContentBlock textContent)
+        {
+            return (result.IsError != true, textContent.Text);
+        }
+        return (result.IsError != true, "Tool executed successfully");
+    }
+    catch (Exception ex)
+    {
+        return (false, ex.Message);
     }
 };
 
