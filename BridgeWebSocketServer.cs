@@ -99,18 +99,37 @@ public class BridgeWebSocketServer : IDisposable
     /// </summary>
     public Task StartListeningAsync()
     {
-        var ip = IPAddress.Parse(_bind);
+        // Use dual-stack sockets to accept both IPv4 and IPv6 connections.
+        // On Windows, "localhost" resolves to ::1 (IPv6) first, so binding only
+        // to 0.0.0.0 (IPv4) causes Unity's ClientWebSocket to hang at SYN_SENT.
+        var useDualStack = _bind == "0.0.0.0" || _bind == "::";
 
         // Main listener for Unity Bridge connections
-        _listener = new TcpListener(ip, _port);
+        if (useDualStack)
+        {
+            _listener = new TcpListener(IPAddress.IPv6Any, _port);
+            _listener.Server.DualMode = true;
+        }
+        else
+        {
+            _listener = new TcpListener(IPAddress.Parse(_bind), _port);
+        }
         _listener.Start();
-        _logger.LogInformation("Listening for Unity Bridge on {Bind}:{Port}", _bind, _port);
+        _logger.LogInformation("Listening for Unity Bridge on {Bind}:{Port} (dual-stack: {DualStack})", _bind, _port, useDualStack);
 
         // Relay listener for secondary MCP instances
         var relayPort = _port + RelayPortOffset;
-        _relayListener = new TcpListener(ip, relayPort);
+        if (useDualStack)
+        {
+            _relayListener = new TcpListener(IPAddress.IPv6Any, relayPort);
+            _relayListener.Server.DualMode = true;
+        }
+        else
+        {
+            _relayListener = new TcpListener(IPAddress.Parse(_bind), relayPort);
+        }
         _relayListener.Start();
-        _logger.LogInformation("Listening for relay clients on {Bind}:{RelayPort}", _bind, relayPort);
+        _logger.LogInformation("Listening for relay clients on {Bind}:{RelayPort} (dual-stack: {DualStack})", _bind, relayPort, useDualStack);
 
         _acceptTask = Task.Run(AcceptLoopAsync);
         _relayAcceptTask = Task.Run(RelayAcceptLoopAsync);

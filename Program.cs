@@ -59,14 +59,17 @@ using var loggerFactory = LoggerFactory.Create(lb =>
 });
 var startupLogger = loggerFactory.CreateLogger("Startup");
 
-// Check if primary server is already running (unless forced to be primary or relay)
+// Check if primary server is already running (unless forced to be primary or relay).
+// Must check both IPv4 and IPv6 since the server uses dual-stack sockets.
 bool IsPortInUse(int checkPort)
 {
+    // Check IPv6 (dual-stack) first — this is what the server binds to
     try
     {
-        using var listener = new TcpListener(IPAddress.Any, checkPort);
-        listener.Start();
-        listener.Stop();
+        using var listener6 = new TcpListener(IPAddress.IPv6Any, checkPort);
+        listener6.Server.DualMode = true;
+        listener6.Start();
+        listener6.Stop();
         return false;
     }
     catch (SocketException)
@@ -196,13 +199,15 @@ wsServer.RelayToolDispatcher = async (toolName, arguments) =>
     try
     {
         // Convert Dictionary<string, object?> to IDictionary<string, JsonElement>
+        // Use Newtonsoft for intermediate serialization — System.Text.Json reflection
+        // is disabled in trimmed builds.
         IDictionary<string, System.Text.Json.JsonElement>? jsonArgs = null;
         if (arguments != null)
         {
             jsonArgs = new Dictionary<string, System.Text.Json.JsonElement>();
             foreach (var kvp in arguments)
             {
-                var jsonString = System.Text.Json.JsonSerializer.Serialize(kvp.Value);
+                var jsonString = Newtonsoft.Json.JsonConvert.SerializeObject(kvp.Value);
                 using var doc = System.Text.Json.JsonDocument.Parse(jsonString);
                 jsonArgs[kvp.Key] = doc.RootElement.Clone();
             }
