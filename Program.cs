@@ -233,6 +233,36 @@ appLogger.LogInformation(
     "Bridge MCP server ready — bind: {Bind}:{Port}, connected: {Connected}, tools: {ToolCount} (listen: {ListenMs}ms, wait: {WaitMs}ms, tools: {ToolsMs}ms)",
     bind, port, connected, toolRegistry.ToolCount, listenMs, waitMs, toolsMs);
 
-await app.RunAsync();
+// Set keep-alive flag so that when the host disposes wsServer, it's a no-op.
+// This lets the WebSocket server survive stdio closure (daemon mode).
+wsServer.KeepAliveAfterHostShutdown = true;
 
+await app.RunAsync(); // stdio closed → host calls Dispose on wsServer (no-op due to flag)
+
+// Daemon mode: WebSocket server still alive, serve Unity + relay clients
+if (wsServer.IsConnected || wsServer.HasRelayClients)
+{
+    startupLogger.LogInformation("stdio closed — entering daemon mode (Unity still connected)");
+
+    var idleSeconds = 0;
+    while (true)
+    {
+        await Task.Delay(1000);
+        if (!wsServer.IsConnected && !wsServer.HasRelayClients)
+        {
+            idleSeconds++;
+            if (idleSeconds >= 300) // 5 min idle → exit
+            {
+                startupLogger.LogInformation("Daemon mode: no connections for 5 minutes — exiting");
+                break;
+            }
+        }
+        else
+        {
+            idleSeconds = 0;
+        }
+    }
+}
+
+wsServer.ForceDispose();
 beacon?.Dispose();

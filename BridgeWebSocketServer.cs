@@ -76,6 +76,8 @@ public class BridgeWebSocketServer : IDisposable
     public Func<List<object>>? RelayToolListProvider { get; set; }
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
+    public bool HasRelayClients => !_relayClients.IsEmpty;
+    public bool KeepAliveAfterHostShutdown { get; set; }
     public string Bind => _bind;
     public int Port => _port;
     public int ReconnectCount => _reconnectCount;
@@ -792,6 +794,16 @@ public class BridgeWebSocketServer : IDisposable
     }
 
     public void Dispose()
+    {
+        if (KeepAliveAfterHostShutdown)
+        {
+            KeepAliveAfterHostShutdown = false; // Only skip once
+            return;
+        }
+        ForceDispose();
+    }
+
+    public void ForceDispose()
     {
         if (_disposed) return;
         _disposed = true;
