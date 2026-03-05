@@ -165,12 +165,88 @@ do_install() {
   echo -n "$VERSION" > "$bin_dir/.version"
   info "Binary installed: $bin_dir/$local_exe"
 
-  # ── 2. Download SKILL.md ────────────────────────────────────────────
+  # ── 2. Open firewall port (Linux / macOS) ──────────────────────────
+  local fw_opened=false
+  local MCP_PORT=18800
+  local HOST_OS="$(uname -s)"
+
+  if [[ "$HOST_OS" == "Linux" ]]; then
+    # Try ufw first (most common on Ubuntu/Debian)
+    if command -v ufw >/dev/null 2>&1; then
+      if command -v pkexec >/dev/null 2>&1; then
+        info "Opening port $MCP_PORT — you may see a password prompt..."
+        if pkexec ufw allow "$MCP_PORT/tcp" 2>/dev/null; then
+          fw_opened=true
+          info "Firewall: port $MCP_PORT opened via ufw"
+        fi
+      elif sudo -n ufw allow "$MCP_PORT/tcp" 2>/dev/null; then
+        fw_opened=true
+        info "Firewall: port $MCP_PORT opened via ufw"
+      fi
+    fi
+
+    # Try firewall-cmd (Fedora/RHEL)
+    if [[ "$fw_opened" == false ]] && command -v firewall-cmd >/dev/null 2>&1; then
+      if command -v pkexec >/dev/null 2>&1; then
+        info "Opening port $MCP_PORT — you may see a password prompt..."
+        if pkexec bash -c "firewall-cmd --add-port=$MCP_PORT/tcp --permanent && firewall-cmd --reload" 2>/dev/null; then
+          fw_opened=true
+          info "Firewall: port $MCP_PORT opened via firewall-cmd"
+        fi
+      elif sudo -n bash -c "firewall-cmd --add-port=$MCP_PORT/tcp --permanent && firewall-cmd --reload" 2>/dev/null; then
+        fw_opened=true
+        info "Firewall: port $MCP_PORT opened via firewall-cmd"
+      fi
+    fi
+
+    # Try iptables as last resort
+    if [[ "$fw_opened" == false ]]; then
+      if command -v pkexec >/dev/null 2>&1; then
+        info "Opening port $MCP_PORT — you may see a password prompt..."
+        if pkexec iptables -I INPUT -p tcp --dport "$MCP_PORT" -j ACCEPT 2>/dev/null; then
+          fw_opened=true
+          info "Firewall: port $MCP_PORT opened via iptables"
+        fi
+      elif sudo -n iptables -I INPUT -p tcp --dport "$MCP_PORT" -j ACCEPT 2>/dev/null; then
+        fw_opened=true
+        info "Firewall: port $MCP_PORT opened via iptables"
+      fi
+    fi
+
+    if [[ "$fw_opened" == false ]]; then
+      info "Warning: Could not auto-open port $MCP_PORT. If remote connections fail, run:"
+      info "  sudo ufw allow $MCP_PORT/tcp"
+    fi
+
+  elif [[ "$HOST_OS" == "Darwin" ]]; then
+    # macOS: add the binary to the application firewall allow list
+    # This uses socketfilterfw which allows inbound connections for the specific binary
+    local fw_binary="$bin_dir/$local_exe"
+    if [[ -x "/usr/libexec/ApplicationFirewall/socketfilterfw" ]]; then
+      info "Configuring macOS firewall to allow Bridge MCP..."
+      # osascript prompts a native macOS admin password dialog (GUI)
+      if osascript -e "do shell script \"/usr/libexec/ApplicationFirewall/socketfilterfw --add '$fw_binary' && /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp '$fw_binary'\" with administrator privileges" 2>/dev/null; then
+        fw_opened=true
+        info "Firewall: Bridge MCP allowed through macOS firewall"
+      elif sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --add "$fw_binary" 2>/dev/null && \
+           sudo -n /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$fw_binary" 2>/dev/null; then
+        fw_opened=true
+        info "Firewall: Bridge MCP allowed through macOS firewall"
+      fi
+    fi
+
+    if [[ "$fw_opened" == false ]]; then
+      info "Warning: Could not auto-configure macOS firewall. If remote connections fail,"
+      info "  go to System Settings > Network > Firewall > Options and allow $BINARY_NAME"
+    fi
+  fi
+
+  # ── 3. Download SKILL.md ────────────────────────────────────────────
   mkdir -p "$SKILL_DIR"
   download_asset "SKILL.md" "$SKILL_DIR/SKILL.md" || exit 1
   info "Skill installed: $SKILL_DIR/SKILL.md"
 
-  # ── 3. Configure mcporter ──────────────────────────────────────────
+  # ── 4. Configure mcporter ──────────────────────────────────────────
   local binary_path="$bin_dir/$local_exe"
 
   mkdir -p "$MCPORTER_DIR"
@@ -208,7 +284,7 @@ print(f'[install] mcporter config updated: {config_path}', file=sys.stderr)
     info '  {"mcpServers":{"digitraver-bridge":{"command":"'"$binary_path"'","args":[]}}}'
   fi
 
-  # ── 4. Print success ───────────────────────────────────────────────
+  # ── 5. Print success ───────────────────────────────────────────────
   echo ""
   echo "=================================================="
   echo "  DigitRaver Bridge MCP — Installed!"
