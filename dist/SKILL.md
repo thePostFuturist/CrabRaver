@@ -25,7 +25,7 @@ You are an autonomous in-world agent connected to a running DigitRaver applicati
 | `world__load_and_wait` | Load world + wait for world_loaded event |
 | `world__unload_and_wait` | Unload world + wait for world_unloaded event |
 | `nav__walk_to_and_wait` | Walk to position + poll until arrival (`destination`, `timeout?`, `threshold?`) |
-| `init_checklist` | Batch: auth + world status + room users + party + map + optional subscribe/load (`subscribe?`, `loadWorld?`) |
+| `init_checklist` | Quick status check: connection health + active subscriptions + optional ping (`ping?`) |
 
 ### Bridge Tools (forwarded to DigitRaver)
 | Tool | Key Parameters |
@@ -79,30 +79,26 @@ Call `connection_status`. Check the response:
 
 ## Step 3 — Initialization Checklist
 
+> **Note**: Event subscriptions are automatic — the MCP server subscribes to all 6 standard events on connect and reconnect. No explicit `events_subscribe` calls needed.
+
 Run these in order. Stop and report if any returns an error.
 
-1. **Auth check** -- Call `auth__get_status` -> log `isSignedIn`, `username`
+1. **Status check** -- Call `init_checklist` -> verify `connected: true` and `activeSubscriptions` contains 6 events
 
-2. **World status** -- Call `world__get_world_status`
+2. **Auth check** -- Call `auth__get_status` -> log `isSignedIn`, `username`
+
+3. **World status** -- Call `world__get_world_status`
    - If `loaded == false` and `loading == false`:
      - Call `world__get_stations` -> pick a station (prefer one with "party" in the name; otherwise use first)
      - Call `world__load_and_wait(station: "<name>")` -> waits for world to finish loading
    - If `loading == true` -> call `world__load_and_wait` with same station (it will wait for completion)
    - If `loaded == true` -> continue
 
-3. **Get map** -- Call `nav__get_map` -> extract `waypoints[]` (named points with positions) and `bounds`
+4. **Get map** -- Call `nav__get_map` -> extract `waypoints[]` (named points with positions) and `bounds`
 
-4. **Compute nav timeout** -- From bounds, calculate: `NAV_TIMEOUT = max(30, max_span / 7)` seconds, where `max_span` is the larger of X-span or Z-span. If no bounds, use 45s.
+5. **Compute nav timeout** -- From bounds, calculate: `NAV_TIMEOUT = max(30, max_span / 7)` seconds, where `max_span` is the larger of X-span or Z-span. If no bounds, use 45s.
 
-5. **Get room users** -- Call `auth__get_room_users` -> snapshot users array
-
-6. **Subscribe to events** -- Make 6 calls to `events_subscribe`:
-   - `(domain: "party", action: "member_joined")`
-   - `(domain: "party", action: "member_left")`
-   - `(domain: "party", action: "roster_changed")`
-   - `(domain: "ui", action: "chat_received")`
-   - `(domain: "bridge", action: "nudge_received")`
-   - `(domain: "nav", action: "walk_dispatched")`
+6. **Get room users** -- Call `auth__get_room_users` -> snapshot users array
 
 7. **Log summary** -- Output: world name, station, number of waypoints, NAV_TIMEOUT, and current players.
 
@@ -260,17 +256,9 @@ Reply via: `bridge__nudge(message: "<result summary>")`
 
 Run when the agent loop completes or the user interrupts.
 
-1. **Unsubscribe all** -- 6 calls to `events_unsubscribe`:
-   - `(domain: "party", action: "member_joined")`
-   - `(domain: "party", action: "member_left")`
-   - `(domain: "party", action: "roster_changed")`
-   - `(domain: "ui", action: "chat_received")`
-   - `(domain: "bridge", action: "nudge_received")`
-   - `(domain: "nav", action: "walk_dispatched")`
+1. **Farewell chat**: Call `ui__send_chat(message: "Signing off -- see you next time!")`
 
-2. **Farewell chat**: Call `ui__send_chat(message: "Signing off -- see you next time!")`
-
-3. **Done** -- no temp files to clean up, no connections to close (MCP server manages its own WebSocket lifecycle).
+2. **Done** -- no temp files to clean up, no connections to close. Event subscriptions are managed automatically by the MCP server.
 
 ---
 

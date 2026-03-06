@@ -402,7 +402,10 @@ public class BridgeWebSocketServer : IDisposable
             using var cts = new CancellationTokenSource(effectiveTimeout);
             cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
 
+            _logger.LogDebug("DIAG SendCommand {Domain}.{Action} waiting for _sendLock (pending={PendingCount})",
+                domain, action, _pending.Count);
             await _sendLock.WaitAsync(cts.Token);
+            _logger.LogDebug("DIAG SendCommand {Domain}.{Action} acquired _sendLock", domain, action);
             try
             {
                 await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cts.Token);
@@ -410,14 +413,20 @@ public class BridgeWebSocketServer : IDisposable
             finally
             {
                 _sendLock.Release();
+                _logger.LogDebug("DIAG SendCommand {Domain}.{Action} released _sendLock", domain, action);
             }
 
-            _logger.LogDebug("Sent: {Domain}.{Action} (id={Id})", domain, action, envelope.Id);
+            _logger.LogDebug("DIAG SendCommand {Domain}.{Action} awaiting response (id={Id})", domain, action, envelope.Id);
 
-            return await tcs.Task;
+            var response = await tcs.Task;
+
+            _logger.LogDebug("DIAG SendCommand {Domain}.{Action} got response (id={Id})", domain, action, envelope.Id);
+            return response;
         }
         catch (OperationCanceledException)
         {
+            _logger.LogWarning("DIAG SendCommand {Domain}.{Action} TIMED OUT after {Timeout}ms (pending={PendingCount})",
+                domain, action, timeoutMs ?? _timeoutMs, _pending.Count);
             throw new TimeoutException($"Bridge command {domain}.{action} timed out after {(timeoutMs ?? _timeoutMs)}ms");
         }
         finally
@@ -454,7 +463,14 @@ public class BridgeWebSocketServer : IDisposable
                     case MessageType.error:
                         if (_pending.TryRemove(envelope.Id, out var tcs))
                         {
+                            _logger.LogDebug("DIAG Receive matched response id={Id} type={Type} (remaining pending={PendingCount})",
+                                envelope.Id, envelope.Type, _pending.Count);
                             tcs.TrySetResult(envelope);
+                        }
+                        else
+                        {
+                            _logger.LogWarning("DIAG Receive UNMATCHED response id={Id} type={Type} — no pending TCS found (pending={PendingCount})",
+                                envelope.Id, envelope.Type, _pending.Count);
                         }
                         break;
 
@@ -534,13 +550,19 @@ public class BridgeWebSocketServer : IDisposable
                 {
                     sw.Stop();
                     _logger.LogWarning("Keepalive timeout after {Elapsed}ms — closing connection", sw.ElapsedMilliseconds);
+                    _logger.LogDebug("DIAG Keepalive close waiting for _sendLock (pending={PendingCount})", _pending.Count);
                     await _sendLock.WaitAsync();
+                    _logger.LogDebug("DIAG Keepalive close acquired _sendLock");
                     try
                     {
                         try { await _ws!.CloseAsync(WebSocketCloseStatus.NormalClosure, "Keepalive timeout", CancellationToken.None); }
                         catch { }
                     }
-                    finally { _sendLock.Release(); }
+                    finally
+                    {
+                        _sendLock.Release();
+                        _logger.LogDebug("DIAG Keepalive close released _sendLock");
+                    }
                     break;
                 }
             }
@@ -587,22 +609,27 @@ public class BridgeWebSocketServer : IDisposable
             var json = JsonConvert.SerializeObject(envelope, JsonSettings);
             var buffer = Encoding.UTF8.GetBytes(json);
 
-            await _sendLock.WaitAsync();
+            using var cts = new CancellationTokenSource(_timeoutMs);
+            cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
+
+            _logger.LogDebug("DIAG Subscribe {Key} waiting for _sendLock (pending={PendingCount})", key, _pending.Count);
+            await _sendLock.WaitAsync(cts.Token);
+            _logger.LogDebug("DIAG Subscribe {Key} acquired _sendLock", key);
             try
             {
-                await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+                await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cts.Token);
             }
             finally
             {
                 _sendLock.Release();
+                _logger.LogDebug("DIAG Subscribe {Key} released _sendLock", key);
             }
 
-            _logger.LogInformation("Subscribing to {Key}", key);
-
-            using var cts = new CancellationTokenSource(_timeoutMs);
-            cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
+            _logger.LogDebug("DIAG Subscribe {Key} awaiting response (id={Id})", key, envelope.Id);
 
             var response = await tcs.Task;
+
+            _logger.LogDebug("DIAG Subscribe {Key} got response (id={Id})", key, envelope.Id);
 
             lock (_subscriptionLock)
             {
@@ -614,6 +641,8 @@ public class BridgeWebSocketServer : IDisposable
         }
         catch (OperationCanceledException)
         {
+            _logger.LogWarning("DIAG Subscribe {Key} TIMED OUT after {Timeout}ms (pending={PendingCount})",
+                key, _timeoutMs, _pending.Count);
             throw new TimeoutException($"Subscribe to {key} timed out after {_timeoutMs}ms");
         }
         finally
@@ -645,10 +674,13 @@ public class BridgeWebSocketServer : IDisposable
             var json = JsonConvert.SerializeObject(envelope, JsonSettings);
             var buffer = Encoding.UTF8.GetBytes(json);
 
-            await _sendLock.WaitAsync();
+            using var cts = new CancellationTokenSource(_timeoutMs);
+            cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
+
+            await _sendLock.WaitAsync(cts.Token);
             try
             {
-                await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+                await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cts.Token);
             }
             finally
             {
@@ -656,9 +688,6 @@ public class BridgeWebSocketServer : IDisposable
             }
 
             _logger.LogInformation("Unsubscribing from {Key}", key);
-
-            using var cts = new CancellationTokenSource(_timeoutMs);
-            cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
 
             var response = await tcs.Task;
 
@@ -775,18 +804,18 @@ public class BridgeWebSocketServer : IDisposable
                 var json = JsonConvert.SerializeObject(envelope, JsonSettings);
                 var buffer = Encoding.UTF8.GetBytes(json);
 
-                await _sendLock.WaitAsync();
+                using var cts = new CancellationTokenSource(5000);
+                cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
+
+                await _sendLock.WaitAsync(cts.Token);
                 try
                 {
-                    await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+                    await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cts.Token);
                 }
                 finally
                 {
                     _sendLock.Release();
                 }
-
-                using var cts = new CancellationTokenSource(5000);
-                cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
 
                 await tcs.Task;
                 _logger.LogDebug("Re-subscribed to {Key}", key);

@@ -13,6 +13,7 @@ var bind = "0.0.0.0";
 var port = 18800;
 var timeout = 10000;
 var verbose = false;
+var diagnostic = false;
 var noBeacon = false;
 var forceRelay = false;
 var forcePrimary = false;
@@ -32,6 +33,10 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "--verbose":
             verbose = true;
+            break;
+        case "--diagnostic":
+            diagnostic = true;
+            verbose = true; // diagnostic implies verbose
             break;
         case "--no-beacon":
             noBeacon = true;
@@ -102,6 +107,8 @@ if (!forcePrimary && (forceRelay || IsPortInUse(port)))
     return; // Exit after relay mode completes
 }
 
+if (diagnostic)
+    startupLogger.LogWarning("DIAGNOSTIC MODE — all debug logging enabled for hang diagnosis");
 startupLogger.LogInformation("MCP server starting — listening on {Bind}:{Port}", bind, port);
 
 // Register the Bridge WebSocket server as singleton
@@ -166,12 +173,44 @@ var waitSw = System.Diagnostics.Stopwatch.StartNew();
 var connected = await wsServer.WaitForConnectionAsync(timeout);
 var waitMs = waitSw.ElapsedMilliseconds;
 
+// Auto-subscribe to standard agent events (fire-and-forget, non-blocking)
+async Task AutoSubscribeAsync(BridgeWebSocketServer client, ILogger logger)
+{
+    var events = new[]
+    {
+        ("party", "member_joined"),
+        ("party", "member_left"),
+        ("party", "roster_changed"),
+        ("ui", "chat_received"),
+        ("bridge", "nudge_received"),
+        ("nav", "walk_dispatched")
+    };
+
+    var tasks = events.Select(async e =>
+    {
+        try
+        {
+            await client.SubscribeAsync(e.Item1, e.Item2);
+            logger.LogInformation("Auto-subscribed to {Domain}.{Action}", e.Item1, e.Item2);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning("Auto-subscribe failed for {Domain}.{Action}: {Error}", e.Item1, e.Item2, ex.Message);
+        }
+    });
+
+    await Task.WhenAll(tasks);
+}
+
 // Load tools from Bridge (falls back to local-only if Unity not yet connected)
 var toolsSw = System.Diagnostics.Stopwatch.StartNew();
 var toolRegistry = app.Services.GetRequiredService<BridgeToolRegistry>();
 if (connected)
 {
     await toolRegistry.LoadToolsAsync(wsServer);
+
+    // Auto-subscribe to standard events (fire-and-forget — don't block MCP startup)
+    _ = AutoSubscribeAsync(wsServer, startupLogger);
 
     // Notify client that tools changed (bridge tools now available)
     var mcpServer = app.Services.GetRequiredService<McpServer>();
@@ -190,6 +229,9 @@ wsServer.OnReconnected += async () =>
     try
     {
         await toolRegistry.ReloadToolsAsync(wsServer);
+
+        // Re-subscribe to standard events (fire-and-forget — don't block reconnect handler)
+        _ = AutoSubscribeAsync(wsServer, startupLogger);
 
         // Notify client that tools changed after reconnect
         var mcpServer = app.Services.GetRequiredService<McpServer>();

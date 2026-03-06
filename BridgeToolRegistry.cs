@@ -147,75 +147,90 @@ public class BridgeToolRegistry
     /// </summary>
     public async Task<CallToolResult> DispatchAsync(string toolName, IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
-        // Lazy-load Bridge tools if Unity connected after startup
-        if (!_loaded && client.IsConnected)
-        {
-            await LoadToolsAsync(client);
-        }
+        _logger.LogDebug("DIAG DispatchAsync ENTER: {Tool} (local={IsLocal}, connected={IsConnected}, loaded={IsLoaded})",
+            toolName, _tools.TryGetValue(toolName, out var peek) && peek.IsLocal, client.IsConnected, _loaded);
+        var dispatchSw = Stopwatch.StartNew();
 
-        if (!_loaded && !client.IsConnected)
+        try
         {
-            return new CallToolResult
+            // Lazy-load Bridge tools if Unity connected after startup
+            if (!_loaded && client.IsConnected)
             {
-                Content = [new TextContentBlock { Text = "Unity is not connected. Bridge tools are not available. Please enter Play Mode in Unity first." }],
-                IsError = true
-            };
-        }
+                _logger.LogDebug("DIAG DispatchAsync lazy-loading tools...");
+                await LoadToolsAsync(client);
+                _logger.LogDebug("DIAG DispatchAsync lazy-load complete");
+            }
 
-        if (!_tools.TryGetValue(toolName, out var entry))
-        {
-            return new CallToolResult
+            if (!_loaded && !client.IsConnected)
             {
-                Content = [new TextContentBlock { Text = $"Unknown tool: {toolName}" }],
-                IsError = true
-            };
-        }
+                return new CallToolResult
+                {
+                    Content = [new TextContentBlock { Text = "Unity is not connected. Bridge tools are not available. Please enter Play Mode in Unity first." }],
+                    IsError = true
+                };
+            }
 
-        var sw = Stopwatch.StartNew();
-
-        // Local tools — some need WebSocket (subscribe/unsubscribe), some don't
-        if (entry.IsLocal)
-        {
-            var result = await HandleLocalToolAsync(entry, arguments, client);
-            sw.Stop();
-            Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
-            _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
-            return result;
-        }
-
-        // Convert arguments from System.Text.Json to Newtonsoft JObject
-        var payload = ConvertArguments(arguments);
-
-        // Special handling for screenshot (returns image content)
-        if (entry.IsScreenshot)
-        {
-            var result = await HandleScreenshot(client, payload);
-            sw.Stop();
-            Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
-            _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
-            return result;
-        }
-
-        // Special handling for bridge__get_tools (refresh registry)
-        if (toolName == "bridge__get_tools")
-        {
-            await LoadToolsAsync(client);
-            sw.Stop();
-            Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
-            _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
-            return new CallToolResult
+            if (!_tools.TryGetValue(toolName, out var entry))
             {
-                Content = [new TextContentBlock { Text = $"Tool registry refreshed. {_tools.Count} tools available." }]
-            };
-        }
+                return new CallToolResult
+                {
+                    Content = [new TextContentBlock { Text = $"Unknown tool: {toolName}" }],
+                    IsError = true
+                };
+            }
 
-        // Standard Bridge command dispatch
+            var sw = Stopwatch.StartNew();
+
+            // Local tools — some need WebSocket (subscribe/unsubscribe), some don't
+            if (entry.IsLocal)
+            {
+                var result = await HandleLocalToolAsync(entry, arguments, client);
+                sw.Stop();
+                Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
+                _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
+                return result;
+            }
+
+            // Convert arguments from System.Text.Json to Newtonsoft JObject
+            var payload = ConvertArguments(arguments);
+
+            // Special handling for screenshot (returns image content)
+            if (entry.IsScreenshot)
+            {
+                var result = await HandleScreenshot(client, payload);
+                sw.Stop();
+                Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
+                _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
+                return result;
+            }
+
+            // Special handling for bridge__get_tools (refresh registry)
+            if (toolName == "bridge__get_tools")
+            {
+                await LoadToolsAsync(client);
+                sw.Stop();
+                Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
+                _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
+                return new CallToolResult
+                {
+                    Content = [new TextContentBlock { Text = $"Tool registry refreshed. {_tools.Count} tools available." }]
+                };
+            }
+
+            // Standard Bridge command dispatch
+            {
+                _logger.LogDebug("DIAG DispatchAsync bridge command: {Domain}.{Action}", entry.Domain, entry.Action);
+                var result = await ExecuteBridgeCommand(client, entry.Domain, entry.Action, payload);
+                sw.Stop();
+                Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
+                _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
+                return result;
+            }
+        }
+        finally
         {
-            var result = await ExecuteBridgeCommand(client, entry.Domain, entry.Action, payload);
-            sw.Stop();
-            Interlocked.Exchange(ref client._lastCallDurationMs, sw.ElapsedMilliseconds);
-            _logger.LogDebug("{Tool} completed in {Elapsed}ms", toolName, sw.ElapsedMilliseconds);
-            return result;
+            dispatchSw.Stop();
+            _logger.LogDebug("DIAG DispatchAsync EXIT: {Tool} ({Elapsed}ms)", toolName, dispatchSw.ElapsedMilliseconds);
         }
     }
 
@@ -371,7 +386,7 @@ public class BridgeToolRegistry
         _tools["init_checklist"] = new ToolRegistryEntry
         {
             Name = "init_checklist",
-            Description = "Gather all initial agent state in one call: auth status, world status, room users, party members, map data, and event subscriptions. Replaces 6+ sequential tool calls from the bridge-agent init step.",
+            Description = "Quick status check: returns connection health, active event subscriptions, and optional ping round-trip. Event subscriptions are automatic on connect — no manual subscribe needed.",
             Domain = "",
             Action = "",
             InputSchemaNewtonsoft = new JObject
@@ -379,8 +394,7 @@ public class BridgeToolRegistry
                 ["type"] = "object",
                 ["properties"] = new JObject
                 {
-                    ["subscribe"] = new JObject { ["type"] = "boolean", ["description"] = "Subscribe to standard agent events (default: true)", ["default"] = true },
-                    ["loadWorld"] = new JObject { ["type"] = "string", ["description"] = "Station name to load if no world is currently loaded (optional)" }
+                    ["ping"] = new JObject { ["type"] = "boolean", ["description"] = "Send a bridge.ping to verify round-trip (default: true)", ["default"] = true }
                 }
             },
             IsLocal = true
@@ -887,135 +901,49 @@ public class BridgeToolRegistry
     private async Task<CallToolResult> HandleInitChecklistAsync(IDictionary<string, JsonElement>? arguments, BridgeWebSocketServer client)
     {
         var args = ConvertArguments(arguments);
-        var subscribe = args?["subscribe"]?.Value<bool>() ?? true;
-        var loadWorld = args?["loadWorld"]?.ToString();
+        var doPing = args?["ping"]?.Value<bool>() ?? true;
 
-        _logger.LogInformation("init_checklist: subscribe={Subscribe}, loadWorld={LoadWorld}", subscribe, loadWorld ?? "(none)");
+        _logger.LogInformation("init_checklist: status check (ping={Ping})", doPing);
         var sw = Stopwatch.StartNew();
-        var result = new JObject();
-
-        try
+        var result = new JObject
         {
-            // 1. Parallel queries: auth, world status, room users, party members
-            var authTask = SafeQueryAsync(client, "auth", "get_status");
-            var worldTask = SafeQueryAsync(client, "world", "get_world_status");
-            var usersTask = SafeQueryAsync(client, "auth", "get_room_users");
-            var partyTask = SafeQueryAsync(client, "party", "get_members");
+            ["connected"] = client.IsConnected,
+            ["activeSubscriptions"] = JArray.FromObject(client.GetActiveSubscriptions())
+        };
 
-            await Task.WhenAll(authTask, worldTask, usersTask, partyTask);
-
-            result["auth"] = authTask.Result;
-            result["world"] = worldTask.Result;
-            result["roomUsers"] = usersTask.Result;
-            result["partyMembers"] = partyTask.Result;
-
-            // 2. Conditional world load
-            var worldLoaded = worldTask.Result?["loaded"]?.Value<bool>() == true;
-            var worldLoading = worldTask.Result?["loading"]?.Value<bool>() == true;
-
-            if (!string.IsNullOrEmpty(loadWorld) && !worldLoaded)
+        // Optional ping to verify round-trip
+        if (doPing && client.IsConnected)
+        {
+            try
             {
-                _logger.LogInformation("init_checklist: world not loaded, loading station '{Station}'...", loadWorld);
-
-                // Validate station name
-                JObject? stationsResult = null;
-                try
+                var pingSw = Stopwatch.StartNew();
+                var response = await client.SendCommandAsync("bridge", "ping", timeoutMs: 3000);
+                pingSw.Stop();
+                result["ping"] = new JObject
                 {
-                    var stationsResponse = await client.SendCommandAsync("world", "get_stations", timeoutMs: 10000);
-                    if (stationsResponse.Type == MessageType.result)
-                        stationsResult = stationsResponse.Payload;
-                }
-                catch { /* best effort */ }
-
-                // Delegate to existing load_and_wait logic
-                var loadArgs = new Dictionary<string, JsonElement>();
-                using var stationDoc = JsonDocument.Parse($"\"{loadWorld}\"");
-                loadArgs["station"] = stationDoc.RootElement.Clone();
-
-                var loadResult = await HandleLoadAndWaitAsync(loadArgs, client);
-
-                // Parse the load result to check if it succeeded
-                try
-                {
-                    var loadText = (loadResult.Content?.FirstOrDefault() as TextContentBlock)?.Text;
-                    if (loadText != null)
-                    {
-                        var loadJson = JObject.Parse(loadText);
-                        result["worldLoad"] = loadJson;
-                        worldLoaded = loadJson["status"]?.ToString() == "loaded";
-                    }
-                }
-                catch
-                {
-                    result["worldLoad"] = new JObject { ["error"] = "Failed to parse load result" };
-                }
-
-                // Refresh world status after load
-                if (worldLoaded)
-                {
-                    var refreshWorld = await SafeQueryAsync(client, "world", "get_world_status");
-                    result["world"] = refreshWorld;
-                }
-            }
-
-            // 3. Get map (only if world is loaded)
-            if (worldLoaded)
-            {
-                result["map"] = await SafeQueryAsync(client, "nav", "get_map");
-            }
-            else
-            {
-                result["map"] = null;
-            }
-
-            // 4. Event subscriptions
-            if (subscribe)
-            {
-                var events = new[]
-                {
-                    ("party", "member_joined"),
-                    ("party", "member_left"),
-                    ("party", "roster_changed"),
-                    ("ui", "chat_received"),
-                    ("bridge", "nudge_received"),
-                    ("nav", "walk_dispatched")
+                    ["ok"] = response.Type == MessageType.result,
+                    ["roundTripMs"] = pingSw.ElapsedMilliseconds
                 };
-
-                var subscribed = new JArray();
-                foreach (var (domain, action) in events)
-                {
-                    try
-                    {
-                        await client.SubscribeAsync(domain, action);
-                        subscribed.Add($"{domain}.{action}");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning("init_checklist: failed to subscribe to {Domain}.{Action}: {Error}", domain, action, ex.Message);
-                    }
-                }
-                result["subscriptions"] = subscribed;
             }
-
-            sw.Stop();
-            result["elapsedMs"] = sw.ElapsedMilliseconds;
-
-            _logger.LogInformation("init_checklist: completed in {Elapsed}ms", sw.ElapsedMilliseconds);
-
-            return new CallToolResult
+            catch (Exception ex)
             {
-                Content = [new TextContentBlock { Text = result.ToString(Formatting.Indented) }]
-            };
+                result["ping"] = new JObject
+                {
+                    ["ok"] = false,
+                    ["error"] = ex.Message
+                };
+            }
         }
-        catch (Exception ex)
+
+        sw.Stop();
+        result["elapsedMs"] = sw.ElapsedMilliseconds;
+
+        _logger.LogInformation("init_checklist: completed in {Elapsed}ms", sw.ElapsedMilliseconds);
+
+        return new CallToolResult
         {
-            sw.Stop();
-            return new CallToolResult
-            {
-                Content = [new TextContentBlock { Text = $"init_checklist error: {ex.Message}" }],
-                IsError = true
-            };
-        }
+            Content = [new TextContentBlock { Text = result.ToString(Formatting.Indented) }]
+        };
     }
 
     /// <summary>
