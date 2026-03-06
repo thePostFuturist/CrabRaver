@@ -5,6 +5,7 @@ using DigitRaverHelperMCP;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 // Parse CLI arguments
@@ -124,6 +125,10 @@ builder.Services
                 .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
                 ?.InformationalVersion ?? "0.0.0"
         };
+        options.Capabilities = new()
+        {
+            Tools = new() { ListChanged = true }
+        };
     })
     .WithStdioServerTransport()
     .WithListToolsHandler((context, _) =>
@@ -167,6 +172,11 @@ var toolRegistry = app.Services.GetRequiredService<BridgeToolRegistry>();
 if (connected)
 {
     await toolRegistry.LoadToolsAsync(wsServer);
+
+    // Notify client that tools changed (bridge tools now available)
+    var mcpServer = app.Services.GetRequiredService<McpServer>();
+    await mcpServer.SendNotificationAsync(NotificationMethods.ToolListChangedNotification);
+    startupLogger.LogInformation("Sent tools/list_changed notification to MCP client");
 }
 else
 {
@@ -180,6 +190,11 @@ wsServer.OnReconnected += async () =>
     try
     {
         await toolRegistry.ReloadToolsAsync(wsServer);
+
+        // Notify client that tools changed after reconnect
+        var mcpServer = app.Services.GetRequiredService<McpServer>();
+        await mcpServer.SendNotificationAsync(NotificationMethods.ToolListChangedNotification);
+        startupLogger.LogInformation("Sent tools/list_changed notification to MCP client");
     }
     catch (Exception ex)
     {

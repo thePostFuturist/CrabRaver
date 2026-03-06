@@ -52,8 +52,8 @@ public class BridgeWebSocketServer : IDisposable
     };
 
     private const int ReceiveBufferSize = 524288;
-    private const int KeepaliveIntervalSeconds = 10;
-    private const int KeepaliveTimeoutSeconds = 15;
+    private const int KeepaliveIntervalSeconds = 15;
+    private const int KeepaliveTimeoutSeconds = 30;
 
     private DateTime _connectedAt;
     private int _reconnectCount;
@@ -177,12 +177,14 @@ public class BridgeWebSocketServer : IDisposable
                     _logger.LogInformation("Replacing existing Unity connection");
                     _receiveCts?.Cancel();
                     try { await (_receiveTask ?? Task.CompletedTask); } catch { }
+                    try { await (_keepaliveTask ?? Task.CompletedTask); } catch { }
                     try { _ws.Dispose(); } catch { }
                     _ws = null;
                 }
 
                 var stream = tcp.GetStream();
-                var ws = await PerformWebSocketHandshakeAsync(stream);
+                using var handshakeCts = new CancellationTokenSource(10_000);
+                var ws = await PerformWebSocketHandshakeAsync(stream, handshakeCts.Token);
                 if (ws == null)
                 {
                     _logger.LogWarning("WebSocket handshake failed");
@@ -205,14 +207,21 @@ public class BridgeWebSocketServer : IDisposable
                 await ResubscribeAllAsync();
 
                 // Notify listeners that Unity reconnected (e.g., to reload tools)
+                // Fire-and-forget so we don't block the accept loop
                 if (OnReconnected != null)
                 {
-                    try { await OnReconnected.Invoke(); }
-                    catch (Exception ex) { _logger.LogWarning("OnReconnected handler failed: {Error}", ex.Message); }
+                    _ = Task.Run(async () =>
+                    {
+                        try { await OnReconnected.Invoke(); }
+                        catch (Exception ex) { _logger.LogWarning("OnReconnected handler failed: {Error}", ex.Message); }
+                    });
                 }
 
                 // Wait for the receive loop to finish (Unity disconnected)
                 await _receiveTask;
+
+                // Belt-and-suspenders: fail any pending requests that survived the receive loop
+                FailAllPending("Unity disconnected");
 
                 _logger.LogInformation("State: disconnected — Unity Bridge disconnected, waiting for reconnection...");
                 _reconnectCount++;
@@ -294,7 +303,7 @@ public class BridgeWebSocketServer : IDisposable
         }
     }
 
-    private async Task<WebSocket?> PerformWebSocketHandshakeAsync(NetworkStream stream)
+    private async Task<WebSocket?> PerformWebSocketHandshakeAsync(NetworkStream stream, CancellationToken ct = default)
     {
         try
         {
@@ -305,7 +314,7 @@ public class BridgeWebSocketServer : IDisposable
 
             while (!headerComplete)
             {
-                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, ct);
                 if (bytesRead == 0) return null;
 
                 headerBuilder.Append(Encoding.UTF8.GetString(buffer, 0, bytesRead));
@@ -348,12 +357,17 @@ public class BridgeWebSocketServer : IDisposable
                            "\r\n";
 
             var responseBytes = Encoding.UTF8.GetBytes(response);
-            await stream.WriteAsync(responseBytes, 0, responseBytes.Length);
-            await stream.FlushAsync();
+            await stream.WriteAsync(responseBytes, 0, responseBytes.Length, ct);
+            await stream.FlushAsync(ct);
 
             // Create WebSocket from the upgraded stream
             return WebSocket.CreateFromStream(stream, isServer: true, subProtocol: null,
                 keepAliveInterval: TimeSpan.FromSeconds(10));
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("WebSocket handshake timed out — client connected TCP but didn't send upgrade headers");
+            return null;
         }
         catch (Exception ex)
         {
@@ -384,10 +398,14 @@ public class BridgeWebSocketServer : IDisposable
             var json = JsonConvert.SerializeObject(envelope, JsonSettings);
             var buffer = Encoding.UTF8.GetBytes(json);
 
-            await _sendLock.WaitAsync();
+            var effectiveTimeout = timeoutMs ?? _timeoutMs;
+            using var cts = new CancellationTokenSource(effectiveTimeout);
+            cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
+
+            await _sendLock.WaitAsync(cts.Token);
             try
             {
-                await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
+                await _ws!.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, cts.Token);
             }
             finally
             {
@@ -395,10 +413,6 @@ public class BridgeWebSocketServer : IDisposable
             }
 
             _logger.LogDebug("Sent: {Domain}.{Action} (id={Id})", domain, action, envelope.Id);
-
-            var effectiveTimeout = timeoutMs ?? _timeoutMs;
-            using var cts = new CancellationTokenSource(effectiveTimeout);
-            cts.Token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
 
             return await tcs.Task;
         }
@@ -465,14 +479,7 @@ public class BridgeWebSocketServer : IDisposable
             }
         }
 
-        // Fail all pending requests
-        foreach (var kvp in _pending)
-        {
-            if (_pending.TryRemove(kvp.Key, out var tcs))
-            {
-                tcs.TrySetException(new WebSocketException("Connection lost"));
-            }
-        }
+        FailAllPending("Connection lost");
 
         _logger.LogDebug("Receive loop ended");
     }
@@ -527,11 +534,13 @@ public class BridgeWebSocketServer : IDisposable
                 {
                     sw.Stop();
                     _logger.LogWarning("Keepalive timeout after {Elapsed}ms — closing connection", sw.ElapsedMilliseconds);
+                    await _sendLock.WaitAsync();
                     try
                     {
-                        await _ws!.CloseAsync(WebSocketCloseStatus.NormalClosure, "Keepalive timeout", CancellationToken.None);
+                        try { await _ws!.CloseAsync(WebSocketCloseStatus.NormalClosure, "Keepalive timeout", CancellationToken.None); }
+                        catch { }
                     }
-                    catch { }
+                    finally { _sendLock.Release(); }
                     break;
                 }
             }
@@ -543,6 +552,15 @@ public class BridgeWebSocketServer : IDisposable
             {
                 _logger.LogDebug("Keepalive failed: {Error}", ex.Message);
             }
+        }
+    }
+
+    private void FailAllPending(string reason)
+    {
+        foreach (var kvp in _pending)
+        {
+            if (_pending.TryRemove(kvp.Key, out var tcs))
+                tcs.TrySetException(new WebSocketException(reason));
         }
     }
 

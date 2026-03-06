@@ -4,18 +4,23 @@
 
 The Bridge MCP Server (`DigitRaverHelperMCP`) translates between the [Model Context Protocol](https://modelcontextprotocol.io/) (stdio/JSON-RPC) and the DigitRaver Bridge WebSocket protocol. An MCP client (Claude Code, OpenClaw, etc.) sees a flat list of tools; the server maps each tool call to a Bridge command and returns the result.
 
+The MCP server **listens** for inbound connections — Unity connects **outward** to it:
+
 ```
-MCP Client ←── stdio (JSON-RPC) ──→ MCP Server ←── WebSocket ──→ Bridge (DigitRaver)
+MCP Client ←── stdio (JSON-RPC) ──→ MCP Server ←── WebSocket ──── Unity (Bridge)
+                                     (server)        (connects inbound)
 ```
 
 ## Source Files
 
 | File | Responsibility |
 |------|---------------|
-| [`Program.cs`](Program.cs) | Entry point — CLI parsing, DI wiring, startup orchestration |
+| [`Program.cs`](Program.cs) | Entry point — CLI parsing, DI wiring, startup orchestration, daemon mode |
 | [`BridgeBeaconBroadcaster.cs`](BridgeBeaconBroadcaster.cs) | UDP multicast broadcaster — advertises the MCP server on the LAN |
-| [`BridgeWebSocketServer.cs`](BridgeWebSocketServer.cs) | WebSocket server — accepts Unity connection, send/receive, keepalive, event buffering |
+| [`BridgeWebSocketServer.cs`](BridgeWebSocketServer.cs) | WebSocket server — accepts Unity connection, manual handshake, send/receive, keepalive, event buffering, relay client handling |
 | [`BridgeToolRegistry.cs`](BridgeToolRegistry.cs) | Dynamic tool registry — loads schemas from Bridge, dispatches MCP tool calls |
+| [`BridgeRelayClient.cs`](BridgeRelayClient.cs) | Relay client — connects secondary MCP instances to a running primary server |
+| [`MessageProtocol.cs`](MessageProtocol.cs) | Wire protocol types — `MessageEnvelope` and `MessageType` enum |
 | [`bridge-launcher.mjs`](bridge-launcher.mjs) | Cross-platform Node.js launcher — RID detection, binary resolution, auto-download |
 
 ## Startup Sequence
@@ -27,24 +32,46 @@ bridge-launcher.mjs
 ├─ 2. Find binary (local build → user cache → GitHub download → dotnet run)
 └─ 3. Spawn DigitRaverHelperMCP, inherit stdio
        │
-       ├─ 4. Parse CLI flags (--host, --port, --verbose, --no-discovery)
+       ├─ 4. Parse CLI flags (--bind, --port, --verbose, --no-beacon, --relay, --primary)
        │
-       ├─ 5. Resolve host
-       │     ├─ --host flag provided  → use it directly
-       │     ├─ UDP discovery          → listen on 239.255.42.99:18801
-       │     │                           use sender IP from UDP packet
-       │     └─ fallback               → localhost:18800
+       ├─ 5. Detect primary/relay mode
+       │     ├─ --primary flag        → always start as primary
+       │     ├─ --relay flag          → always connect as relay client
+       │     └─ default               → probe port with TcpListener (dual-stack)
+       │                                if port in use → relay mode
+       │                                if port free   → primary mode
        │
-       ├─ 6. WebSocket connect → ws://{host}:{port}
-       │     └─ retries with backoff (2s, 4s, 8s), max 3 attempts
+       ├─ [RELAY PATH] → BridgeRelayClient connects to ws://127.0.0.1:{port+1}
+       │                  forwards stdio ↔ WebSocket, exits when stdin closes
        │
-       ├─ 7. Load tools → bridge.get_tools over WebSocket
-       │     ├─ register ~15 Bridge tools ({domain}__{action})
-       │     └─ 9 local tools always registered
+       ├─ [PRIMARY PATH]
        │
-       └─ 8. MCP stdio transport ready
-             ├─ tools/list  → BridgeToolRegistry.GetToolList()
-             └─ tools/call  → BridgeToolRegistry.DispatchAsync()
+       ├─ 6. Start TCP listeners
+       │     ├─ Main listener on {bind}:{port}    (Unity Bridge connections)
+       │     └─ Relay listener on {bind}:{port+1} (secondary MCP instances)
+       │     Both use dual-stack sockets (IPv6Any + DualMode) for IPv4/IPv6
+       │
+       ├─ 7. Start beacon broadcaster (unless --no-beacon)
+       │     └─ UDP multicast on 239.255.42.99:18801 every 5s
+       │
+       ├─ 8. Wait for Unity to connect (with --timeout, default 10s)
+       │     └─ polls IsConnected every 100ms
+       │
+       ├─ 9. Load tools → bridge.get_tools over WebSocket
+       │     ├─ register Bridge tools ({domain}__{action})
+       │     ├─ 9 local tools always registered
+       │     └─ send tools/list_changed notification to MCP client
+       │
+       ├─ 10. Wire OnReconnected → ReloadToolsAsync → tools/list_changed
+       │
+       ├─ 11. Wire relay dispatchers (RelayToolListProvider, RelayToolDispatcher)
+       │
+       ├─ 12. Set KeepAliveAfterHostShutdown = true
+       │
+       └─ 13. MCP stdio transport ready (app.RunAsync)
+              ├─ tools/list  → BridgeToolRegistry.GetToolList()
+              ├─ tools/call  → BridgeToolRegistry.DispatchAsync()
+              └─ on stdio close → daemon mode (if Unity/relay still connected)
 ```
 
 ## Data Flow: Tool Call
@@ -52,7 +79,7 @@ bridge-launcher.mjs
 A single MCP `tools/call` request follows this path:
 
 ```
-MCP Client                    MCP Server                         Bridge (DigitRaver)
+MCP Client                    MCP Server                         Bridge (Unity)
     │                             │                                    │
     │── tools/call ──────────────→│                                    │
     │   {name, arguments}         │                                    │
@@ -82,7 +109,7 @@ MCP Client                    MCP Server                         Bridge (DigitRa
 Bridge events are push-based. The MCP server buffers them for poll-based retrieval by the MCP client:
 
 ```
-Bridge                         MCP Server                      MCP Client
+Bridge (Unity)                 MCP Server                      MCP Client
   │                                │                               │
   │── event {domain, action} ─────→│                               │
   │                                │── EnqueueEvent() ────→ buffer │
@@ -94,58 +121,117 @@ Bridge                         MCP Server                      MCP Client
   │                                │   returns buffered events     │
 ```
 
-The client must explicitly subscribe first (`events_subscribe` tool), which sends a `subscribe` message over WebSocket. Subscriptions survive reconnects — `ResubscribeAllAsync()` re-registers them after every new connection.
+The client must explicitly subscribe first (`events_subscribe` tool), which sends a `subscribe` message over WebSocket. Subscriptions survive reconnects — `ResubscribeAllAsync()` re-registers them after every new Unity connection.
 
-## UDP Discovery
+## UDP Beacon
 
-The Bridge advertiser (Unity-side `BridgeDiscoveryAdvertiser`) broadcasts JSON beacons on multicast group `239.255.42.99:18801`:
+The MCP server **broadcasts** UDP beacons on multicast group `239.255.42.99:18801` every 5 seconds so Unity can discover it:
 
 ```json
 {
-  "service": "digitraver-bridge",
-  "version": 1,
-  "hostname": "GAMING-PC",
+  "service": "digitraver-mcp",
+  "version": 2,
   "port": 18800,
-  "deviceId": "abc123"
+  "hostname": "GAMING-PC"
 }
 ```
 
-The MCP server **ignores the `hostname` field** for connection purposes and instead uses the UDP packet's source IP address (`UdpReceiveResult.RemoteEndPoint.Address`). This is critical for LAN discovery — the hostname is often a machine name (e.g., "GAMING-PC") that won't resolve across machines, while the source IP is always the correct routable address. The beacon hostname is still logged for diagnostics.
+Unity listens for these beacons and uses the UDP packet's source IP to connect back.
 
 ```
-Bridge (Machine A)                              MCP Server (Machine B)
+MCP Server (Machine A)                          Unity (Machine B)
   │                                                   │
   │── UDP beacon ────────────────────────────────────→│
-  │   src: 192.168.1.42:random                        │
+  │   src: 192.168.1.10:random                        │
   │   dst: 239.255.42.99:18801                        │
-  │   payload: {"hostname":"GAMING-PC", "port":18800} │
+  │   payload: {"service":"digitraver-mcp",           │
+  │             "version":2, "port":18800,            │
+  │             "hostname":"GAMING-PC"}               │
   │                                                   │
-  │                        host = RemoteEndPoint.Address (192.168.1.42)
+  │                        host = RemoteEndPoint.Address (192.168.1.10)
   │                        port = beacon["port"] (18800)
   │                                                   │
   │←──────────── WebSocket connect ───────────────────│
-  │              ws://192.168.1.42:18800              │
+  │              ws://192.168.1.10:18800              │
 ```
 
-**Fallback chain**: `--host` flag → UDP discovery (5s timeout) → `localhost:18800`
+Disabled with `--no-beacon`. The MCP server always listens on `--bind`:`--port` regardless of beacon status — there is no fallback chain.
 
 ## WebSocket Connection
 
-`BridgeWebSocketClient` maintains a single persistent connection with:
+`BridgeWebSocketServer` uses a `TcpListener` with manual HTTP→WebSocket upgrade (no HttpListener or Kestrel dependency):
 
-- **Auto-reconnect**: On unexpected disconnect, schedules reconnect after 1s delay. `ConnectAsync` retries up to 3 times with exponential backoff (2s, 4s, 8s).
-- **Keepalive**: Sends `auth.get_status` every 30s. Timeout after 10s triggers a reconnect.
-- **Send serialization**: A `SemaphoreSlim` ensures only one frame is written at a time.
-- **Receive loop**: Runs on a background `Task`, reassembles multi-frame messages into a single buffer (initial 512KB, auto-expands), deserializes the `MessageEnvelope`, and either completes a pending request or enqueues an event.
-- **Subscription persistence**: Active subscriptions are tracked in a `HashSet` and re-registered after every reconnect.
+### Accept Loop
+- Listens on `{bind}:{port}` using dual-stack sockets (IPv6Any + DualMode) for both IPv4 and IPv6
+- On incoming TCP connection, enables TCP keepalive (10s time, 5s interval, 3 retries)
+- Performs manual WebSocket handshake: reads HTTP upgrade request, extracts `Sec-WebSocket-Key`, computes SHA-1 accept hash, sends `101 Switching Protocols`, creates `WebSocket` from the upgraded stream
+- Handshake has a 10-second timeout — if the client connects TCP but doesn't send upgrade headers, the connection is dropped
+- **Single-connection model**: Only one Unity connection at a time. A new connection replaces the previous one (cancels receive/keepalive loops, disposes old WebSocket)
+
+### Keepalive
+- Sends `bridge.ping` every **15 seconds**
+- Timeout after **30 seconds** triggers connection close (keepalive loop breaks, accept loop waits for Unity to reconnect)
+
+### Reconnection
+- Unity is responsible for reconnecting. The accept loop runs continuously, waiting for new TCP connections
+- On reconnect: re-subscribes all active event subscriptions, fires `OnReconnected` event (triggers tool reload)
+- `_reconnectCount` tracks how many times Unity has reconnected
+
+### Send Serialization
+- A `SemaphoreSlim` ensures only one WebSocket frame is written at a time
+
+### Receive Loop
+- Runs on a background task, reassembles multi-frame messages (initial 512KB buffer, auto-expands)
+- Deserializes `MessageEnvelope` and either completes a pending request (`result`/`error`) or enqueues an event
+
+## Relay Mode
+
+Allows multiple MCP clients to share a single Unity Bridge connection. The first MCP instance becomes the **primary**; subsequent instances connect as **relay clients**.
+
+```
+MCP Client A ── stdio ──→ Primary MCP Server ←── WebSocket ──── Unity
+                             │ port 18800
+                             │ port 18801 (relay)
+MCP Client B ── stdio ──→ Relay Client ── WebSocket ──→ │
+```
+
+### Primary Side
+
+- Detects it should be primary when port is free (or `--primary` flag)
+- Listens on two ports: `{port}` for Unity, `{port}+1` for relay clients
+- `RelayAcceptLoopAsync` accepts relay WebSocket connections on the relay port
+- Each relay client gets a `RelayClientConnection` that:
+  - Receives JSON-RPC messages (`tools/list`, `tools/call`)
+  - Dispatches through the same `BridgeToolRegistry` as the primary
+  - Returns results as JSON-RPC responses over WebSocket
+
+### Relay Side
+
+- Detects it should be relay when port is already in use (or `--relay` flag)
+- `BridgeRelayClient` connects to `ws://127.0.0.1:{port+1}`
+- Forwards bidirectionally: stdin → WebSocket, WebSocket → stdout
+- Exits when stdin closes or WebSocket disconnects
+
+## Daemon Mode
+
+After `app.RunAsync()` returns (stdio closed by the MCP client), the server checks if Unity or relay clients are still connected:
+
+- **If connected**: enters a keep-alive loop, checking every second
+- **If no connections for 5 minutes**: exits
+- **If a connection exists**: resets the idle counter
+
+This is enabled by setting `KeepAliveAfterHostShutdown = true` before `app.RunAsync()`. The `Dispose()` method becomes a no-op the first time it's called (by the host shutdown), preserving the WebSocket server. `ForceDispose()` is called on final exit.
 
 ## Tool Registry
 
 `BridgeToolRegistry` holds two categories of tools:
 
-### Bridge tools (~15, dynamic)
+### Bridge tools (dynamic)
 
-Loaded at startup from `bridge.get_tools`. Each tool's name encodes its routing: `{domain}__{action}`. The registry stores the JSON schema from the Bridge and dispatches calls as `SendCommandAsync(domain, action, payload)`.
+Loaded from Unity via `bridge.get_tools`. Each tool's name encodes its routing: `{domain}__{action}`. The registry stores the JSON schema from the Bridge and dispatches calls as `SendCommandAsync(domain, action, payload)`.
+
+- **Lazy load**: If Unity isn't connected at startup, the server starts with local-only tools. Bridge tools are loaded once Unity connects.
+- **Reload on reconnect**: `OnReconnected` fires `ReloadToolsAsync` which clears non-local tools and re-fetches from Bridge, then sends a `tools/list_changed` notification to the MCP client.
 
 ### Local tools (9, static)
 
@@ -167,7 +253,7 @@ The compound tools (`*_and_wait`, `init_checklist`) eliminate multi-step LLM pol
 
 ## Wire Protocol
 
-All WebSocket messages use the `MessageEnvelope` format:
+All WebSocket messages use the `MessageEnvelope` format (defined in `MessageProtocol.cs`):
 
 ```json
 {
@@ -180,7 +266,7 @@ All WebSocket messages use the `MessageEnvelope` format:
 }
 ```
 
-- `command` → client-to-Bridge request (expects `result` or `error` back)
+- `command` → MCP-to-Bridge request (expects `result` or `error` back)
 - `subscribe` / `unsubscribe` → event registration (expects `result` back)
-- `event` → Bridge-to-client push (no response expected)
-- `result` / `error` → Bridge-to-client response (correlated by `id`)
+- `event` → Bridge-to-MCP push (no response expected)
+- `result` / `error` → Bridge-to-MCP response (correlated by `id`)

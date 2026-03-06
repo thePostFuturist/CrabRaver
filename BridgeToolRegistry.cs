@@ -153,6 +153,15 @@ public class BridgeToolRegistry
             await LoadToolsAsync(client);
         }
 
+        if (!_loaded && !client.IsConnected)
+        {
+            return new CallToolResult
+            {
+                Content = [new TextContentBlock { Text = "Unity is not connected. Bridge tools are not available. Please enter Play Mode in Unity first." }],
+                IsError = true
+            };
+        }
+
         if (!_tools.TryGetValue(toolName, out var entry))
         {
             return new CallToolResult
@@ -1125,6 +1134,14 @@ public class BridgeToolRegistry
             return new CallToolResult
             {
                 Content = [new TextContentBlock { Text = ex.Message }],
+                IsError = true
+            };
+        }
+        catch (Exception ex)
+        {
+            return new CallToolResult
+            {
+                Content = [new TextContentBlock { Text = $"Bridge command failed: {ex.Message}" }],
                 IsError = true
             };
         }

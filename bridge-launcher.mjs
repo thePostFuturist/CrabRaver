@@ -185,12 +185,7 @@ if (binary) {
   if (process.env.BRIDGE_DEBUG === "1") args.push("--verbose");
   args.push(...process.argv.slice(2));
 
-  const child = spawn(binary, args, { stdio: "inherit" });
-
-  // Forward signals to child
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
-    process.on(sig, () => child.kill(sig));
-  }
+  const child = spawn(binary, args, { stdio: "inherit", detached: true });
 
   child.on("exit", (code, signal) => {
     process.exit(signal ? 1 : (code ?? 1));
