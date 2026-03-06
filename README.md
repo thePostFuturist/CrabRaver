@@ -13,13 +13,13 @@ One-line install — downloads the binary, installs the agent skill, and configu
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.sh | bash
+curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.sh | bash
 ```
 
 ### Windows (PowerShell)
 
 ```powershell
-irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.ps1 | iex
+irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.ps1 | iex
 ```
 
 ### Windows (Git Bash)
@@ -27,7 +27,7 @@ irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/insta
 The bash installer also works in Git Bash / MSYS2:
 
 ```bash
-curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.sh | bash
+curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.sh | bash
 ```
 
 ### Private repos — provide a GitHub token
@@ -35,13 +35,13 @@ curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.1
 **macOS / Linux / Git Bash:**
 
 ```bash
-GITHUB_TOKEN=ghp_xxx curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.sh | bash
+GITHUB_TOKEN=ghp_xxx curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-$env:GITHUB_TOKEN = 'ghp_xxx'; irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.ps1 | iex
+$env:GITHUB_TOKEN = 'ghp_xxx'; irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.ps1 | iex
 ```
 
 ### What it installs
@@ -64,13 +64,13 @@ mcporter config list   # should show digitraver-bridge
 **macOS / Linux / Git Bash:**
 
 ```bash
-curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.sh | bash -s -- --uninstall
+curl -fsSL https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.sh | bash -s -- --uninstall
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.16/install.ps1 -OutFile install.ps1; .\install.ps1 -Uninstall
+irm https://github.com/thePostFuturist/CrabRaver/releases/download/v1.1.17/install.ps1 -OutFile install.ps1; .\install.ps1 -Uninstall
 ```
 
 ---
